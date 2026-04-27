@@ -1,8 +1,24 @@
-# env file
+# env
 .env
+.env.local
 
 # dependencies
-node_modules
+node_modules/
 
 # logs
-npm-debug.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# system
+.DS_Store
+
+# build
+dist/
+build/
+
+# vscode
+.vscode/
+
+# mac
+*.swp
