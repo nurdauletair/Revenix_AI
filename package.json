@@ -1,0 +1,29 @@
+{
+  "name": "revenix-ai-bot",
+  "version": "1.0.0",
+  "description": "AI chatbot for business automation across Telegram, Instagram and WhatsApp",
+  "main": "server.js",
+  "scripts": {
+  "start": "node app.js",
+  "dev": "node app.js"
+},
+  "keywords": [
+    "ai",
+    "chatbot",
+    "telegram",
+    "instagram",
+    "whatsapp",
+    "supabase",
+    "openai"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.104.1",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "node-telegram-bot-api": "^0.67.0",
+    "openai": "^6.34.0"
+  }
+}
