@@ -6,17 +6,14 @@ const app = express();
 
 app.use(express.json());
 
-// тестовый роут
 app.get("/", (req, res) => {
-  res.send("Server is running 🚀");
+  res.send("Bot is alive 🚀");
 });
 
-// запуск Telegram
 require("./channels/telegram");
 
-// запуск сервера
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 });
