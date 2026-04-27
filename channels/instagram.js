@@ -2,10 +2,14 @@ const axios = require("axios");
 const { handleMessage } = require("../server");
 const supabase = require("../database/supabase");
 
+// ======================
+// SEND MESSAGE TO INSTAGRAM
+// ======================
+
 async function sendInstagramMessage({ recipientId, text, accessToken }) {
   try {
     await axios.post(
-      `https://graph.instagram.com/v21.0/me/messages`,
+      "https://graph.instagram.com/v21.0/me/messages",
       {
         recipient: {
           id: recipientId
@@ -20,6 +24,8 @@ async function sendInstagramMessage({ recipientId, text, accessToken }) {
         }
       }
     );
+
+    console.log("✅ Instagram reply sent");
   } catch (error) {
     console.error(
       "Instagram send error:",
@@ -28,24 +34,46 @@ async function sendInstagramMessage({ recipientId, text, accessToken }) {
   }
 }
 
+// ======================
+// FIND BUSINESS BY INSTAGRAM ID
+// ======================
+
+async function findBusinessByInstagramId(instagramAccountId) {
+  const { data, error } = await supabase
+    .from("businesses")
+    .select("*")
+    .eq("instagram_account_id", String(instagramAccountId))
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (error) {
+    console.error("Instagram business find error:", error);
+    return null;
+  }
+
+  return data;
+}
+
+// ======================
+// HANDLE INSTAGRAM WEBHOOK
+// ======================
+
 async function handleInstagramWebhook(body) {
   try {
-    if (!body.entry) return;
+    if (!body || body.object !== "instagram") {
+      console.log("Ignored non-instagram webhook");
+      return;
+    }
+
+    if (!body.entry || !Array.isArray(body.entry)) {
+      console.log("No Instagram entry found");
+      return;
+    }
 
     for (const entry of body.entry) {
-      const instagramAccountId = entry.id;
+      const instagramAccountId = String(entry.id);
 
-      const { data: business, error } = await supabase
-        .from("businesses")
-        .select("*")
-        .eq("instagram_account_id", String(instagramAccountId))
-        .eq("is_active", true)
-        .maybeSingle();
-
-      if (error) {
-        console.error("Instagram business find error:", error);
-        continue;
-      }
+      const business = await findBusinessByInstagramId(instagramAccountId);
 
       if (!business) {
         console.log("No business found for Instagram ID:", instagramAccountId);
@@ -55,12 +83,39 @@ async function handleInstagramWebhook(body) {
       const messagingEvents = entry.messaging || [];
 
       for (const event of messagingEvents) {
+        console.log("FULL INSTAGRAM EVENT:", JSON.stringify(event, null, 2));
+
+        // Игнорируем редактирование сообщений
+        if (event.message_edit) {
+          console.log("Ignored Instagram message_edit event");
+          continue;
+        }
+
+        // Игнорируем доставку/прочитано/реакции и другие события
+        if (!event.message) {
+          console.log("Ignored Instagram event without message");
+          continue;
+        }
+
+        // Игнорируем сообщения без текста
+        if (!event.message.text) {
+          console.log("Ignored Instagram non-text message");
+          continue;
+        }
+
         const senderId = event.sender?.id;
-        const text = event.message?.text;
+        const text = event.message.text;
 
-        if (!senderId || !text) continue;
+        if (!senderId) {
+          console.log("Ignored Instagram event without senderId");
+          continue;
+        }
 
-        if (senderId === instagramAccountId) continue;
+        // Защита: если вдруг sender = сам бизнес
+        if (String(senderId) === instagramAccountId) {
+          console.log("Ignored own Instagram message");
+          continue;
+        }
 
         console.log("📩 Instagram message:", text);
 
@@ -70,6 +125,11 @@ async function handleInstagramWebhook(body) {
           userId: senderId,
           text
         });
+
+        if (!answer) {
+          console.log("AI returned empty answer");
+          continue;
+        }
 
         await sendInstagramMessage({
           recipientId: senderId,
