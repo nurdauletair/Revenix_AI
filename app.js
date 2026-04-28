@@ -29,9 +29,13 @@ app.get("/webhook", (req, res) => {
 app.post("/webhook", async (req, res) => {
   console.log("📩 Instagram event:", JSON.stringify(req.body, null, 2));
 
-  res.sendStatus(200);
+  try {
+    await handleInstagramWebhook(req.body);
+  } catch (err) {
+    console.error("Webhook error:", err);
+  }
 
-  await handleInstagramWebhook(req.body);
+  res.sendStatus(200);
 });
 
 const PORT = process.env.PORT || 8080;
@@ -40,4 +44,4 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-require("./channels/telegram");
+//require("./channels/telegram");
