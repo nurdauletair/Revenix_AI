@@ -1,19 +1,22 @@
-import OpenAI from "openai";
-import dotenv from "dotenv";
+require("dotenv").config();
 
-dotenv.config();
+const OpenAI = require("openai");
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-export async function askAI(systemPrompt, history) {
+async function askAI(systemPrompt, history, text) {
   const messages = [
     {
       role: "system",
       content: systemPrompt,
     },
     ...history,
+    {
+      role: "user",
+      content: text,
+    },
   ];
 
   const response = await openai.chat.completions.create({
@@ -24,3 +27,7 @@ export async function askAI(systemPrompt, history) {
 
   return response.choices[0].message.content;
 }
+
+module.exports = {
+  askAI,
+};

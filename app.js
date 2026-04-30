@@ -1,7 +1,7 @@
 require("dotenv").config();
 
 const express = require("express");
-const { handleInstagramWebhook } = require("./channels/instagram");
+const { handleWhatsAppWebhook } = require("./channels/whatsapp");
 
 const app = express();
 
@@ -27,15 +27,15 @@ app.get("/webhook", (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
-  console.log("📩 Instagram event:", JSON.stringify(req.body, null, 2));
-
-  try {
-    await handleInstagramWebhook(req.body);
-  } catch (err) {
-    console.error("Webhook error:", err);
-  }
+  console.log("📩 WhatsApp webhook:", JSON.stringify(req.body, null, 2));
 
   res.sendStatus(200);
+
+  try {
+    await handleWhatsAppWebhook(req.body);
+  } catch (err) {
+    console.error("WhatsApp webhook error:", err.response?.data || err.message);
+  }
 });
 
 const PORT = process.env.PORT || 8080;
