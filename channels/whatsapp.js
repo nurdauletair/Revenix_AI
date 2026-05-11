@@ -3,24 +3,38 @@ const fs = require("fs");
 const path = require("path");
 
 const supabase = require("../database/supabase");
+
 const { handleMessage } = require("../server");
+
 const { decrypt } = require("../utils/encryption");
+
 const { transcribeAudio } = require("../ai/transcribe");
+
+const { analyzeImage } = require("../ai/vision");
 
 // =========================
 // FIND BUSINESS
 // =========================
 
-async function findBusinessByPhoneNumberId(phoneNumberId) {
+async function findBusinessByPhoneNumberId(
+  phoneNumberId
+) {
   const { data, error } = await supabase
     .from("businesses")
     .select("*")
-    .eq("whatsapp_phone_number_id", String(phoneNumberId))
+    .eq(
+      "whatsapp_phone_number_id",
+      String(phoneNumberId)
+    )
     .eq("whatsapp_enabled", true)
     .maybeSingle();
 
   if (error) {
-    console.error("WhatsApp business find error:", error);
+    console.error(
+      "WhatsApp business find error:",
+      error
+    );
+
     throw error;
   }
 
@@ -31,8 +45,14 @@ async function findBusinessByPhoneNumberId(phoneNumberId) {
 // SEND MESSAGE
 // =========================
 
-async function sendWhatsAppMessage({ business, to, text }) {
-  const token = decrypt(business.whatsapp_token_encrypted);
+async function sendWhatsAppMessage({
+  business,
+  to,
+  text,
+}) {
+  const token = decrypt(
+    business.whatsapp_token_encrypted
+  );
 
   const url = `https://graph.facebook.com/v20.0/${business.whatsapp_phone_number_id}/messages`;
 
@@ -56,11 +76,15 @@ async function sendWhatsAppMessage({ business, to, text }) {
 }
 
 // =========================
-// DOWNLOAD WHATSAPP AUDIO
+// DOWNLOAD MEDIA
 // =========================
 
-async function downloadWhatsAppAudio({ mediaId, token }) {
-  // 1. get media info
+async function downloadWhatsAppMedia({
+  mediaId,
+  token,
+  extension = "tmp",
+}) {
+  // get media info
   const mediaResponse = await axios.get(
     `https://graph.facebook.com/v20.0/${mediaId}`,
     {
@@ -72,20 +96,20 @@ async function downloadWhatsAppAudio({ mediaId, token }) {
 
   const mediaUrl = mediaResponse.data.url;
 
-  // 2. download file
-  const audioResponse = await axios.get(mediaUrl, {
+  // download media
+  const mediaFile = await axios.get(mediaUrl, {
     responseType: "arraybuffer",
     headers: {
       Authorization: `Bearer ${token}`,
     },
   });
 
-  // 3. save temp file
-  const fileName = `voice_${Date.now()}.ogg`;
+  // save temp file
+  const fileName = `wa_${Date.now()}.${extension}`;
 
   const filePath = path.join("/tmp", fileName);
 
-  fs.writeFileSync(filePath, audioResponse.data);
+  fs.writeFileSync(filePath, mediaFile.data);
 
   return filePath;
 }
@@ -105,19 +129,22 @@ async function handleWhatsAppWebhook(body) {
 
       if (!value) continue;
 
-      const phoneNumberId = value.metadata?.phone_number_id;
+      const phoneNumberId =
+        value.metadata?.phone_number_id;
 
       const messages = value.messages || [];
 
-      if (!phoneNumberId || !messages.length) continue;
+      if (!phoneNumberId || !messages.length)
+        continue;
 
-      const business = await findBusinessByPhoneNumberId(
-        phoneNumberId
-      );
+      const business =
+        await findBusinessByPhoneNumberId(
+          phoneNumberId
+        );
 
       if (!business) {
         console.error(
-          "Business not found for WhatsApp phone_number_id:",
+          "Business not found:",
           phoneNumberId
         );
 
@@ -128,10 +155,14 @@ async function handleWhatsAppWebhook(body) {
         try {
           const userId = msg.from;
 
+          const token = decrypt(
+            business.whatsapp_token_encrypted
+          );
+
           let text = null;
 
           // =========================
-          // TEXT MESSAGE
+          // TEXT
           // =========================
 
           if (msg.type === "text") {
@@ -139,65 +170,134 @@ async function handleWhatsAppWebhook(body) {
           }
 
           // =========================
-          // AUDIO MESSAGE
+          // AUDIO
           // =========================
 
           if (msg.type === "audio") {
-            const token = decrypt(
-              business.whatsapp_token_encrypted
-            );
-
-            const mediaId = msg.audio?.id;
-
-            if (!mediaId) {
-              await sendWhatsAppMessage({
-                business,
-                to: userId,
-                text: "Не получилось обработать голосовое сообщение.",
-              });
-
-              continue;
-            }
-
-            // send processing message
             await sendWhatsAppMessage({
               business,
               to: userId,
-              text: "🎤 Обрабатываю голосовое сообщение...",
+              text: "🎤 Обрабатываю голосовое...",
             });
 
-            // download audio
+            const mediaId = msg.audio?.id;
+
             const filePath =
-              await downloadWhatsAppAudio({
+              await downloadWhatsAppMedia({
                 mediaId,
                 token,
+                extension: "ogg",
               });
 
-            // transcribe
-            text = await transcribeAudio(filePath);
+            text = await transcribeAudio(
+              filePath
+            );
 
-            // delete temp file
             fs.unlinkSync(filePath);
 
-            console.log("VOICE TEXT:", text);
+            console.log(
+              "VOICE TRANSCRIPTION:",
+              text
+            );
           }
 
           // =========================
-          // UNSUPPORTED MESSAGE
+          // IMAGE
+          // =========================
+
+          if (msg.type === "image") {
+            await sendWhatsAppMessage({
+              business,
+              to: userId,
+              text: "🖼 Анализирую изображение...",
+            });
+
+            const mediaId = msg.image?.id;
+
+            const caption =
+              msg.image?.caption || "";
+
+            const filePath =
+              await downloadWhatsAppMedia({
+                mediaId,
+                token,
+                extension: "jpg",
+              });
+
+            const imageAnalysis =
+              await analyzeImage(
+                filePath,
+                `
+Клиент отправил изображение.
+
+Подпись клиента:
+${caption}
+
+Опиши изображение и помоги понять,
+что хочет клиент.
+`
+              );
+
+            fs.unlinkSync(filePath);
+
+            text = `
+Клиент отправил изображение.
+
+Описание изображения:
+${imageAnalysis}
+
+Подпись:
+${caption}
+`;
+          }
+
+          // =========================
+          // LOCATION
+          // =========================
+
+          if (msg.type === "location") {
+            const latitude =
+              msg.location?.latitude;
+
+            const longitude =
+              msg.location?.longitude;
+
+            text = `
+Клиент отправил геолокацию.
+
+Latitude: ${latitude}
+Longitude: ${longitude}
+`;
+          }
+
+          // =========================
+          // DOCUMENT
+          // =========================
+
+          if (msg.type === "document") {
+            text = `
+Клиент отправил документ:
+${msg.document?.filename || "file"}
+`;
+          }
+
+          // =========================
+          // UNSUPPORTED
           // =========================
 
           if (!text) {
             await sendWhatsAppMessage({
               business,
               to: userId,
-              text: "Пока я умею работать только с текстом и голосовыми сообщениями.",
+              text:
+                "Пока я умею работать с текстом, голосовыми, фото, геолокацией и документами.",
             });
 
             continue;
           }
 
           // =========================
-          // AI RESPONSE
+          // AI
           // =========================
 
           const answer = await handleMessage({
@@ -215,9 +315,19 @@ async function handleWhatsAppWebhook(body) {
           });
         } catch (err) {
           console.error(
-            "WhatsApp message processing error:",
-            err.response?.data || err.message
+            "WhatsApp processing error:",
+            err.response?.data ||
+              err.message
           );
+
+          try {
+            await sendWhatsAppMessage({
+              business,
+              to: msg.from,
+              text:
+                "Произошла ошибка. Менеджер скоро свяжется с вами.",
+            });
+          } catch (_) {}
         }
       }
     }
@@ -227,29 +337,3 @@ async function handleWhatsAppWebhook(body) {
 module.exports = {
   handleWhatsAppWebhook,
 };
-
-
-if (msg.type === "image") {
-  const token = decrypt(business.whatsapp_token_encrypted);
-  const mediaId = msg.image?.id;
-  const caption = msg.image?.caption || "";
-
-  const filePath = await downloadWhatsAppMedia({
-    mediaId,
-    token,
-    extension: "jpg",
-  });
-
-  const imageText = await analyzeImage(
-    filePath,
-    `Клиент отправил фото в WhatsApp. Подпись клиента: "${caption}". 
-    Опиши фото и помоги понять, что клиент хочет. 
-    Если это фото окна/товара/чека/проблемы, выдели важные детали.`
-  );
-
-  fs.unlinkSync(filePath);
-
-  text = caption
-    ? `Клиент отправил фото с подписью: "${caption}". Анализ фото: ${imageText}`
-    : `Клиент отправил фото. Анализ фото: ${imageText}`;
-}
