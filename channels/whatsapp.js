@@ -1,7 +1,15 @@
 const axios = require("axios");
+const fs = require("fs");
+const path = require("path");
+
 const supabase = require("../database/supabase");
 const { handleMessage } = require("../server");
 const { decrypt } = require("../utils/encryption");
+const { transcribeAudio } = require("../ai/transcribe");
+
+// =========================
+// FIND BUSINESS
+// =========================
 
 async function findBusinessByPhoneNumberId(phoneNumberId) {
   const { data, error } = await supabase
@@ -18,6 +26,10 @@ async function findBusinessByPhoneNumberId(phoneNumberId) {
 
   return data;
 }
+
+// =========================
+// SEND MESSAGE
+// =========================
 
 async function sendWhatsAppMessage({ business, to, text }) {
   const token = decrypt(business.whatsapp_token_encrypted);
@@ -43,6 +55,45 @@ async function sendWhatsAppMessage({ business, to, text }) {
   );
 }
 
+// =========================
+// DOWNLOAD WHATSAPP AUDIO
+// =========================
+
+async function downloadWhatsAppAudio({ mediaId, token }) {
+  // 1. get media info
+  const mediaResponse = await axios.get(
+    `https://graph.facebook.com/v20.0/${mediaId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  const mediaUrl = mediaResponse.data.url;
+
+  // 2. download file
+  const audioResponse = await axios.get(mediaUrl, {
+    responseType: "arraybuffer",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  // 3. save temp file
+  const fileName = `voice_${Date.now()}.ogg`;
+
+  const filePath = path.join("/tmp", fileName);
+
+  fs.writeFileSync(filePath, audioResponse.data);
+
+  return filePath;
+}
+
+// =========================
+// HANDLE WEBHOOK
+// =========================
+
 async function handleWhatsAppWebhook(body) {
   const entries = body.entry || [];
 
@@ -51,47 +102,123 @@ async function handleWhatsAppWebhook(body) {
 
     for (const change of changes) {
       const value = change.value;
+
       if (!value) continue;
 
       const phoneNumberId = value.metadata?.phone_number_id;
+
       const messages = value.messages || [];
 
       if (!phoneNumberId || !messages.length) continue;
 
-      const business = await findBusinessByPhoneNumberId(phoneNumberId);
+      const business = await findBusinessByPhoneNumberId(
+        phoneNumberId
+      );
 
       if (!business) {
-        console.error("Business not found for WhatsApp phone_number_id:", phoneNumberId);
+        console.error(
+          "Business not found for WhatsApp phone_number_id:",
+          phoneNumberId
+        );
+
         continue;
       }
 
       for (const msg of messages) {
-        if (msg.type !== "text") {
+        try {
+          const userId = msg.from;
+
+          let text = null;
+
+          // =========================
+          // TEXT MESSAGE
+          // =========================
+
+          if (msg.type === "text") {
+            text = msg.text?.body;
+          }
+
+          // =========================
+          // AUDIO MESSAGE
+          // =========================
+
+          if (msg.type === "audio") {
+            const token = decrypt(
+              business.whatsapp_token_encrypted
+            );
+
+            const mediaId = msg.audio?.id;
+
+            if (!mediaId) {
+              await sendWhatsAppMessage({
+                business,
+                to: userId,
+                text: "Не получилось обработать голосовое сообщение.",
+              });
+
+              continue;
+            }
+
+            // send processing message
+            await sendWhatsAppMessage({
+              business,
+              to: userId,
+              text: "🎤 Обрабатываю голосовое сообщение...",
+            });
+
+            // download audio
+            const filePath =
+              await downloadWhatsAppAudio({
+                mediaId,
+                token,
+              });
+
+            // transcribe
+            text = await transcribeAudio(filePath);
+
+            // delete temp file
+            fs.unlinkSync(filePath);
+
+            console.log("VOICE TEXT:", text);
+          }
+
+          // =========================
+          // UNSUPPORTED MESSAGE
+          // =========================
+
+          if (!text) {
+            await sendWhatsAppMessage({
+              business,
+              to: userId,
+              text: "Пока я умею работать только с текстом и голосовыми сообщениями.",
+            });
+
+            continue;
+          }
+
+          // =========================
+          // AI RESPONSE
+          // =========================
+
+          const answer = await handleMessage({
+            business,
+            channel: "whatsapp",
+            userId,
+            text,
+          });
+
+          // send answer
           await sendWhatsAppMessage({
             business,
-            to: msg.from,
-            text: "Спасибо! Сейчас менеджер посмотрит ваше сообщение.",
+            to: userId,
+            text: answer,
           });
-          continue;
+        } catch (err) {
+          console.error(
+            "WhatsApp message processing error:",
+            err.response?.data || err.message
+          );
         }
-
-        const userId = msg.from;
-        const text = msg.text?.body;
-
-        if (!text) continue;
-
-        const answer = await handleMessage({
-          business,
-          channel: "whatsapp",
-          userId,
-          text,
-        });
-
-        await sendWhatsAppMessage({
-          business,
-          to: userId,
-          text: answer,
-        });
       }
     }
   }
