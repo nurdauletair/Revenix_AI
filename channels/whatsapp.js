@@ -227,3 +227,29 @@ async function handleWhatsAppWebhook(body) {
 module.exports = {
   handleWhatsAppWebhook,
 };
+
+
+if (msg.type === "image") {
+  const token = decrypt(business.whatsapp_token_encrypted);
+  const mediaId = msg.image?.id;
+  const caption = msg.image?.caption || "";
+
+  const filePath = await downloadWhatsAppMedia({
+    mediaId,
+    token,
+    extension: "jpg",
+  });
+
+  const imageText = await analyzeImage(
+    filePath,
+    `Клиент отправил фото в WhatsApp. Подпись клиента: "${caption}". 
+    Опиши фото и помоги понять, что клиент хочет. 
+    Если это фото окна/товара/чека/проблемы, выдели важные детали.`
+  );
+
+  fs.unlinkSync(filePath);
+
+  text = caption
+    ? `Клиент отправил фото с подписью: "${caption}". Анализ фото: ${imageText}`
+    : `Клиент отправил фото. Анализ фото: ${imageText}`;
+}
