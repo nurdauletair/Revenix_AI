@@ -2,9 +2,13 @@ require("dotenv").config();
 
 const OpenAI = require("openai");
 
+const supabase = require("./database/supabase");
+
 const { buildPrompt } = require("./ai/prompt");
 const { extractBooking } = require("./ai/extractBooking");
 const { createBooking } = require("./database/bookings");
+const { detectHandoff } = require("./ai/detectHandoff");
+const { notifyAdminsAboutHandoff } = require("./services/telegramAlerts");
 
 const {
   getOrCreateCustomer,
@@ -56,7 +60,12 @@ async function handleMessage({ business, channel, userId, text }) {
       channel
     );
 
-    // 2. save user message
+    // 2. if human already required, stop AI from continuing
+    if (customer.human_required) {
+      return "Ваш запрос уже передан менеджеру. Он скоро свяжется с вами 👌";
+    }
+
+    // 3. save user message
     await saveMessage({
       businessId: business.id,
       customerId: customer.id,
@@ -66,37 +75,37 @@ async function handleMessage({ business, channel, userId, text }) {
       channel,
     });
 
-    // 3. update customer activity
+    // 4. update customer activity
     await updateCustomerLastMessage(customer.id);
 
-    // 4. get conversation history
+    // 5. get conversation history
     const conversationMemory = await getConversationMemory(
       business.id,
       userId,
       channel
     );
 
-    // 5. get customer memory
+    // 6. get customer memory
     const customerMemory = await getCustomerMemory(
       business.id,
       userId,
       channel
     );
 
-    // 6. build system prompt
+    // 7. build system prompt
     const systemPrompt =
       buildPrompt(business, customer) +
       "\n\n" +
       customerMemory;
 
-    // 7. ask AI
+    // 8. ask AI
     const answer = await askAI(
       systemPrompt,
       conversationMemory,
       text
     );
 
-    // 8. save AI message
+    // 9. save AI message
     await saveMessage({
       businessId: business.id,
       customerId: customer.id,
@@ -106,7 +115,7 @@ async function handleMessage({ business, channel, userId, text }) {
       channel,
     });
 
-    // 9. update customer memory
+    // 10. update customer memory
     await updateCustomerMemory(
       business.id,
       userId,
@@ -114,7 +123,7 @@ async function handleMessage({ business, channel, userId, text }) {
       channel
     );
 
-    // 10. extract booking and save to Supabase + Google Sheets
+    // 11. extract booking and save to Supabase + Google Sheets
     try {
       const bookingData = await extractBooking({
         business,
@@ -147,6 +156,45 @@ async function handleMessage({ business, channel, userId, text }) {
       }
     } catch (bookingError) {
       console.error("Booking extraction/save error:", bookingError);
+    }
+
+    // 12. detect human handoff and notify admins
+    try {
+      const handoff = await detectHandoff({
+        userText: text,
+        aiAnswer: answer,
+      });
+
+      if (handoff?.handoff_required) {
+        await supabase
+          .from("customers")
+          .update({
+            human_required: true,
+            human_requested_at: new Date().toISOString(),
+            human_reason: handoff.reason || "Нужен менеджер",
+            status: "human_required",
+          })
+          .eq("id", customer.id);
+
+        await notifyAdminsAboutHandoff({
+          business,
+          customer,
+          channel,
+          userId,
+          userText: text,
+          aiAnswer: answer,
+          reason: handoff.reason,
+        });
+
+        console.log("🚨 Human handoff requested:", {
+          business: business.name,
+          userId,
+          channel,
+          reason: handoff.reason,
+        });
+      }
+    } catch (handoffError) {
+      console.error("Handoff detection error:", handoffError);
     }
 
     return answer;
