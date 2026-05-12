@@ -42,7 +42,7 @@ async function loadBusiness() {
 loadBusiness();
 
 // ======================
-// ADMIN CHECK FROM DATABASE
+// ADMIN CHECK
 // ======================
 
 async function isAdmin(userId) {
@@ -62,6 +62,212 @@ async function isAdmin(userId) {
 
   return !!data;
 }
+
+// ======================
+// HELPERS
+// ======================
+
+async function findCustomerByUserId(userId) {
+  const { data, error } = await supabase
+    .from("customers")
+    .select("*")
+    .eq("business_id", currentBusiness.id)
+    .eq("user_id", String(userId))
+    .maybeSingle();
+
+  if (error) {
+    console.error("Customer find error:", error);
+    throw error;
+  }
+
+  return data;
+}
+
+async function updateCustomerHumanMode({
+  userId,
+  humanRequired,
+  reason = null,
+}) {
+  const payload = humanRequired
+    ? {
+        human_required: true,
+        human_requested_at: new Date().toISOString(),
+        human_reason: reason || "Отключено менеджером вручную",
+        status: "human_required",
+      }
+    : {
+        human_required: false,
+        human_requested_at: null,
+        human_reason: null,
+        status: "new",
+      };
+
+  const { data, error } = await supabase
+    .from("customers")
+    .update(payload)
+    .eq("business_id", currentBusiness.id)
+    .eq("user_id", String(userId))
+    .select()
+    .maybeSingle();
+
+  if (error) {
+    console.error("Human mode update error:", error);
+    throw error;
+  }
+
+  return data;
+}
+
+// ======================
+// /start
+// ======================
+
+bot.onText(/\/start/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  const text = `
+Здравствуйте 👋
+
+Команды администратора:
+
+/myid — узнать свой Telegram ID
+/clients — список клиентов
+/requests — заявки
+/stats — статистика
+/leads — статусы лидов
+
+/ai_off USER_ID — отключить AI для клиента
+/ai_on USER_ID — включить AI обратно
+/status USER_ID — проверить статус клиента
+`;
+
+  bot.sendMessage(chatId, text);
+});
+
+// ======================
+// /myid
+// ======================
+
+bot.onText(/\/myid/, async (msg) => {
+  bot.sendMessage(
+    msg.chat.id,
+    `Ваш Telegram ID: ${msg.chat.id}`
+  );
+});
+
+// ======================
+// /ai_on USER_ID
+// ======================
+
+bot.onText(/\/ai_on (.+)/, async (msg, match) => {
+  const isUserAdmin = await isAdmin(msg.chat.id);
+  if (!isUserAdmin) return;
+
+  if (!currentBusiness) {
+    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+  }
+
+  const userId = match[1].trim();
+
+  try {
+    const customer = await updateCustomerHumanMode({
+      userId,
+      humanRequired: false,
+    });
+
+    if (!customer) {
+      return bot.sendMessage(
+        msg.chat.id,
+        `Клиент не найден: ${userId}`
+      );
+    }
+
+    bot.sendMessage(
+      msg.chat.id,
+      `✅ AI снова включен для клиента: ${userId}`
+    );
+  } catch (error) {
+    console.error("AI on error:", error);
+    bot.sendMessage(msg.chat.id, "Ошибка при включении AI");
+  }
+});
+
+// ======================
+// /ai_off USER_ID
+// ======================
+
+bot.onText(/\/ai_off (.+)/, async (msg, match) => {
+  const isUserAdmin = await isAdmin(msg.chat.id);
+  if (!isUserAdmin) return;
+
+  if (!currentBusiness) {
+    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+  }
+
+  const userId = match[1].trim();
+
+  try {
+    const customer = await updateCustomerHumanMode({
+      userId,
+      humanRequired: true,
+      reason: "Отключено менеджером вручную",
+    });
+
+    if (!customer) {
+      return bot.sendMessage(
+        msg.chat.id,
+        `Клиент не найден: ${userId}`
+      );
+    }
+
+    bot.sendMessage(
+      msg.chat.id,
+      `⛔ AI отключен для клиента: ${userId}`
+    );
+  } catch (error) {
+    console.error("AI off error:", error);
+    bot.sendMessage(msg.chat.id, "Ошибка при отключении AI");
+  }
+});
+
+// ======================
+// /status USER_ID
+// ======================
+
+bot.onText(/\/status (.+)/, async (msg, match) => {
+  const isUserAdmin = await isAdmin(msg.chat.id);
+  if (!isUserAdmin) return;
+
+  const userId = match[1].trim();
+
+  try {
+    const customer = await findCustomerByUserId(userId);
+
+    if (!customer) {
+      return bot.sendMessage(
+        msg.chat.id,
+        `Клиент не найден: ${userId}`
+      );
+    }
+
+    const text = `
+👤 Клиент: ${customer.name || "Без имени"}
+🆔 User ID: ${customer.user_id}
+🔗 Канал: ${customer.channel || "неизвестно"}
+📞 Телефон: ${customer.phone || "не указан"}
+📍 Адрес: ${customer.address || "не указан"}
+📌 Статус: ${customer.status || "new"}
+
+🤖 AI отключен: ${customer.human_required ? "ДА" : "НЕТ"}
+📌 Причина: ${customer.human_reason || "нет"}
+`;
+
+    bot.sendMessage(msg.chat.id, text);
+  } catch (error) {
+    console.error("Status error:", error);
+    bot.sendMessage(msg.chat.id, "Ошибка при получении статуса");
+  }
+});
 
 // ======================
 // /clients
@@ -100,6 +306,7 @@ bot.onText(/\/clients/, async (msg) => {
     text += `📍 Адрес: ${c.address || "не указан"}\n`;
     text += `🧾 Потребность: ${c.need || "не указана"}\n`;
     text += `📌 Статус: ${c.status || "new"}\n`;
+    text += `🤖 AI: ${c.human_required ? "ОТКЛЮЧЕН" : "включен"}\n`;
     text += `🆔 User ID: ${c.user_id}\n\n`;
   });
 
@@ -183,7 +390,8 @@ bot.onText(/\/stats/, async (msg) => {
     .in("status", [
       "measurement_requested",
       "appointment_requested",
-      "lead_ready"
+      "lead_ready",
+      "human_required",
     ]);
 
   const text = `
@@ -191,7 +399,7 @@ bot.onText(/\/stats/, async (msg) => {
 
 💬 Сообщений: ${messagesCount || 0}
 👥 Клиентов: ${customersCount || 0}
-🔥 Заявок: ${requestCount || 0}
+🔥 Заявок/обращений: ${requestCount || 0}
 
 Каналы:
 Telegram: ${telegramCount || 0}
@@ -217,7 +425,8 @@ bot.onText(/\/requests/, async (msg) => {
     .in("status", [
       "measurement_requested",
       "appointment_requested",
-      "lead_ready"
+      "lead_ready",
+      "human_required",
     ])
     .order("updated_at", { ascending: false })
     .limit(30);
@@ -240,6 +449,12 @@ bot.onText(/\/requests/, async (msg) => {
     text += `📍 Адрес: ${c.address || "не указан"}\n`;
     text += `🧾 Потребность: ${c.need || "не указана"}\n`;
     text += `📌 Статус: ${c.status || "new"}\n`;
+    text += `🤖 AI: ${c.human_required ? "ОТКЛЮЧЕН" : "включен"}\n`;
+    text += `🆔 User ID: ${c.user_id}\n`;
+
+    if (c.human_required) {
+      text += `🔁 Вернуть AI: /ai_on ${c.user_id}\n`;
+    }
 
     if (c.extra_data && Object.keys(c.extra_data).length > 0) {
       text += `➕ Доп. данные: ${JSON.stringify(c.extra_data)}\n`;
@@ -260,7 +475,6 @@ bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
 
-
     if (!text) return;
     if (text.startsWith("/")) return;
 
@@ -274,7 +488,7 @@ bot.on("message", async (msg) => {
       business: currentBusiness,
       channel: "telegram",
       userId: chatId,
-      text
+      text,
     });
 
     bot.sendMessage(chatId, answer);
