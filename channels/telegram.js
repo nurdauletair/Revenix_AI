@@ -11,28 +11,22 @@ if (!TELEGRAM_TOKEN) {
 }
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, {
-  polling: false,
+  polling: {
+    interval: 1000,
+    autoStart: true,
+    params: {
+      timeout: 10,
+    },
+  },
 });
-
-async function startTelegramPolling() {
-  try {
-    await bot.deleteWebHook({ drop_pending_updates: true });
-
-    await bot.startPolling({
-      restart: true,
-    });
-
-    console.log("✅ Telegram polling started");
-  } catch (err) {
-    console.error("Telegram polling start error:", err.message || err);
-  }
-}
 
 bot.on("polling_error", (err) => {
-  console.error("Telegram polling error:", err.message || err);
+  console.error("Telegram polling error:", {
+    code: err.code,
+    message: err.message,
+    response: err.response?.body,
+  });
 });
-
-startTelegramPolling();
 
 let currentBusiness = null;
 
