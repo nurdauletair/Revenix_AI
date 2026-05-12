@@ -10,7 +10,29 @@ if (!TELEGRAM_TOKEN) {
   throw new Error("TELEGRAM_TOKEN не найден в .env");
 }
 
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+const bot = new TelegramBot(TELEGRAM_TOKEN, {
+  polling: false,
+});
+
+async function startTelegramPolling() {
+  try {
+    await bot.deleteWebHook({ drop_pending_updates: true });
+
+    await bot.startPolling({
+      restart: true,
+    });
+
+    console.log("✅ Telegram polling started");
+  } catch (err) {
+    console.error("Telegram polling start error:", err.message || err);
+  }
+}
+
+bot.on("polling_error", (err) => {
+  console.error("Telegram polling error:", err.message || err);
+});
+
+startTelegramPolling();
 
 let currentBusiness = null;
 
