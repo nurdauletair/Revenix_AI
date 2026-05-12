@@ -3,6 +3,8 @@ require("dotenv").config();
 const OpenAI = require("openai");
 
 const { buildPrompt } = require("./ai/prompt");
+const { extractBooking } = require("./ai/extractBooking");
+const { createBooking } = require("./database/bookings");
 
 const {
   getOrCreateCustomer,
@@ -10,11 +12,11 @@ const {
   getCustomerMemory,
   saveMessage,
   updateCustomerMemory,
-  updateCustomerLastMessage
+  updateCustomerLastMessage,
 } = require("./ai/memory");
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 // =========================
@@ -28,14 +30,14 @@ async function askAI(systemPrompt, history, text) {
     messages: [
       {
         role: "system",
-        content: systemPrompt
+        content: systemPrompt,
       },
       ...history,
       {
         role: "user",
-        content: text
-      }
-    ]
+        content: text,
+      },
+    ],
   });
 
   return completion.choices[0].message.content;
@@ -61,7 +63,7 @@ async function handleMessage({ business, channel, userId, text }) {
       chatId: userId,
       role: "user",
       content: text,
-      channel
+      channel,
     });
 
     // 3. update customer activity
@@ -101,7 +103,7 @@ async function handleMessage({ business, channel, userId, text }) {
       chatId: userId,
       role: "assistant",
       content: answer,
-      channel
+      channel,
     });
 
     // 9. update customer memory
@@ -112,13 +114,49 @@ async function handleMessage({ business, channel, userId, text }) {
       channel
     );
 
+    // 10. extract booking and save to Supabase + Google Sheets
+    try {
+      const bookingData = await extractBooking({
+        business,
+        customerMemory,
+        userText: text,
+        aiAnswer: answer,
+      });
+
+      if (bookingData?.booking_ready) {
+        await createBooking({
+          business,
+          customer,
+          customerName: bookingData.customer_name,
+          customerPhone: bookingData.customer_phone,
+          service: bookingData.service,
+          address: bookingData.address,
+          preferredTime: bookingData.preferred_time,
+          notes: bookingData.notes,
+          userId,
+          channel,
+        });
+
+        console.log("✅ Booking created:", {
+          business: business.name,
+          userId,
+          channel,
+          service: bookingData.service,
+          preferredTime: bookingData.preferred_time,
+        });
+      }
+    } catch (bookingError) {
+      console.error("Booking extraction/save error:", bookingError);
+    }
+
     return answer;
   } catch (err) {
     console.error("AI ERROR:", err);
+
     return "Извините, сейчас техническая ошибка. Менеджер скоро ответит.";
   }
 }
 
 module.exports = {
-  handleMessage
+  handleMessage,
 };
