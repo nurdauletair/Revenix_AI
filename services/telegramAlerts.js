@@ -3,7 +3,7 @@ require("dotenv").config();
 const axios = require("axios");
 const supabase = require("../database/supabase");
 
-async function sendTelegramMessage(chatId, text) {
+async function sendTelegramMessage(chatId, text, replyMarkup = null) {
   const token = process.env.TELEGRAM_TOKEN;
 
   if (!token) {
@@ -11,11 +11,20 @@ async function sendTelegramMessage(chatId, text) {
     return;
   }
 
-  await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+  const payload = {
     chat_id: chatId,
     text,
     parse_mode: "HTML",
-  });
+  };
+
+  if (replyMarkup) {
+    payload.reply_markup = replyMarkup;
+  }
+
+  await axios.post(
+    `https://api.telegram.org/bot${token}/sendMessage`,
+    payload
+  );
 }
 
 async function notifyAdminsAboutHandoff({
@@ -42,32 +51,64 @@ async function notifyAdminsAboutHandoff({
     return;
   }
 
+  const safeUserText = userText || "не указано";
+  const safeAiAnswer = aiAnswer || "не указано";
+  const safeReason = reason || "нужен менеджер";
+
   const message = `
 🚨 <b>Клиент просит менеджера</b>
 
-🏢 Бизнес: ${business.name || "не указано"}
-📲 Канал: ${channel}
-👤 User ID: ${userId}
+🏢 <b>Бизнес:</b> ${business.name || "не указано"}
+📲 <b>Канал:</b> ${channel}
+👤 <b>User ID:</b> ${userId}
 
 💬 <b>Сообщение клиента:</b>
-${userText}
+${safeUserText}
 
 🤖 <b>Ответ AI:</b>
-${aiAnswer}
+${safeAiAnswer}
 
 📌 <b>Причина:</b>
-${reason || "нужен менеджер"}
+${safeReason}
 
 ✅ Свяжитесь с клиентом как можно быстрее.
+
+Команды:
+✅ Вернуть AI: /ai_on ${userId}
+⛔ Оставить менеджеру: /ai_off ${userId}
 `;
+
+  const replyMarkup = {
+    inline_keyboard: [
+      [
+        {
+          text: "✅ Вернуть AI",
+          callback_data: `ai_on:${userId}`,
+        },
+      ],
+      [
+        {
+          text: "⛔ Оставить менеджеру",
+          callback_data: `ai_off:${userId}`,
+        },
+      ],
+    ],
+  };
 
   for (const admin of admins) {
     if (!admin.telegram_user_id) continue;
 
     try {
-      await sendTelegramMessage(admin.telegram_user_id, message);
+      await sendTelegramMessage(
+        admin.telegram_user_id,
+        message,
+        replyMarkup
+      );
     } catch (err) {
-      console.error("Telegram alert error:", err.response?.data || err.message);
+      console.error(
+        "Telegram alert error:",
+        err.response?.data || err.message
+      );
     }
   }
 }

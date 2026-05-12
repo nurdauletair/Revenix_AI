@@ -135,6 +135,96 @@ async function updateCustomerHumanMode({
 }
 
 // ======================
+// CALLBACK BUTTONS
+// ======================
+
+bot.on("callback_query", async (query) => {
+  const chatId = query.message?.chat?.id;
+  const data = query.data;
+
+  if (!chatId || !data) return;
+
+  const isUserAdmin = await isAdmin(chatId);
+
+  if (!isUserAdmin) {
+    return bot.answerCallbackQuery(query.id, {
+      text: "Нет доступа",
+      show_alert: true,
+    });
+  }
+
+  const [action, userId] = data.split(":");
+
+  if (!action || !userId) {
+    return bot.answerCallbackQuery(query.id, {
+      text: "Некорректная кнопка",
+      show_alert: true,
+    });
+  }
+
+  try {
+    if (action === "ai_on") {
+      const customer = await updateCustomerHumanMode({
+        userId,
+        humanRequired: false,
+      });
+
+      if (!customer) {
+        return bot.answerCallbackQuery(query.id, {
+          text: "Клиент не найден",
+          show_alert: true,
+        });
+      }
+
+      await bot.answerCallbackQuery(query.id, {
+        text: "AI включен",
+      });
+
+      return bot.sendMessage(
+        chatId,
+        `✅ AI снова включен для клиента: ${userId}`
+      );
+    }
+
+    if (action === "ai_off") {
+      const customer = await updateCustomerHumanMode({
+        userId,
+        humanRequired: true,
+        reason: "Оставлено менеджеру через кнопку",
+      });
+
+      if (!customer) {
+        return bot.answerCallbackQuery(query.id, {
+          text: "Клиент не найден",
+          show_alert: true,
+        });
+      }
+
+      await bot.answerCallbackQuery(query.id, {
+        text: "AI оставлен отключенным",
+      });
+
+      return bot.sendMessage(
+        chatId,
+        `⛔ AI оставлен отключенным для клиента: ${userId}`
+      );
+    }
+
+    return bot.answerCallbackQuery(query.id, {
+      text: "Неизвестное действие",
+      show_alert: true,
+    });
+  } catch (error) {
+    console.error("Callback query error:", error);
+
+    return bot.answerCallbackQuery(query.id, {
+      text: "Ошибка обработки кнопки",
+      show_alert: true,
+    });
+  }
+});
+
+// ======================
 // /start
 // ======================
 
@@ -165,10 +255,7 @@ bot.onText(/\/start/, async (msg) => {
 // ======================
 
 bot.onText(/\/myid/, async (msg) => {
-  bot.sendMessage(
-    msg.chat.id,
-    `Ваш Telegram ID: ${msg.chat.id}`
-  );
+  bot.sendMessage(msg.chat.id, `Ваш Telegram ID: ${msg.chat.id}`);
 });
 
 // ======================
@@ -192,16 +279,10 @@ bot.onText(/\/ai_on (.+)/, async (msg, match) => {
     });
 
     if (!customer) {
-      return bot.sendMessage(
-        msg.chat.id,
-        `Клиент не найден: ${userId}`
-      );
+      return bot.sendMessage(msg.chat.id, `Клиент не найден: ${userId}`);
     }
 
-    bot.sendMessage(
-      msg.chat.id,
-      `✅ AI снова включен для клиента: ${userId}`
-    );
+    bot.sendMessage(msg.chat.id, `✅ AI снова включен для клиента: ${userId}`);
   } catch (error) {
     console.error("AI on error:", error);
     bot.sendMessage(msg.chat.id, "Ошибка при включении AI");
@@ -230,16 +311,10 @@ bot.onText(/\/ai_off (.+)/, async (msg, match) => {
     });
 
     if (!customer) {
-      return bot.sendMessage(
-        msg.chat.id,
-        `Клиент не найден: ${userId}`
-      );
+      return bot.sendMessage(msg.chat.id, `Клиент не найден: ${userId}`);
     }
 
-    bot.sendMessage(
-      msg.chat.id,
-      `⛔ AI отключен для клиента: ${userId}`
-    );
+    bot.sendMessage(msg.chat.id, `⛔ AI отключен для клиента: ${userId}`);
   } catch (error) {
     console.error("AI off error:", error);
     bot.sendMessage(msg.chat.id, "Ошибка при отключении AI");
@@ -254,16 +329,17 @@ bot.onText(/\/status (.+)/, async (msg, match) => {
   const isUserAdmin = await isAdmin(msg.chat.id);
   if (!isUserAdmin) return;
 
+  if (!currentBusiness) {
+    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+  }
+
   const userId = match[1].trim();
 
   try {
     const customer = await findCustomerByUserId(userId);
 
     if (!customer) {
-      return bot.sendMessage(
-        msg.chat.id,
-        `Клиент не найден: ${userId}`
-      );
+      return bot.sendMessage(msg.chat.id, `Клиент не найден: ${userId}`);
     }
 
     const text = `
@@ -337,6 +413,10 @@ bot.onText(/\/leads/, async (msg) => {
   const isUserAdmin = await isAdmin(msg.chat.id);
   if (!isUserAdmin) return;
 
+  if (!currentBusiness) {
+    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+  }
+
   const { data, error } = await supabase
     .from("customers")
     .select("status")
@@ -370,6 +450,10 @@ bot.onText(/\/leads/, async (msg) => {
 bot.onText(/\/stats/, async (msg) => {
   const isUserAdmin = await isAdmin(msg.chat.id);
   if (!isUserAdmin) return;
+
+  if (!currentBusiness) {
+    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+  }
 
   const { count: messagesCount } = await supabase
     .from("messages")
@@ -433,6 +517,10 @@ WhatsApp: ${whatsappCount || 0}
 bot.onText(/\/requests/, async (msg) => {
   const isUserAdmin = await isAdmin(msg.chat.id);
   if (!isUserAdmin) return;
+
+  if (!currentBusiness) {
+    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+  }
 
   const { data, error } = await supabase
     .from("customers")
