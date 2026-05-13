@@ -1,2 +1,2 @@
-# Revenix_AI
+# Skalyar_AI
 AI chatbot for business automation (Telegram, Instagram, WhatsApp)
