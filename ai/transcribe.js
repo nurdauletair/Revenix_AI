@@ -20,3 +20,4 @@ async function transcribeAudio(filePath) {
 module.exports = {
   transcribeAudio,
 };
+//great Nurdaulet
