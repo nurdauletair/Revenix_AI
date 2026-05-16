@@ -51,13 +51,25 @@ async function appendBookingToSheet({
       booking.notes || "",
 
       booking.user_id || "",
+
+      booking.lead_quality || "",
+
+      booking.room_type || "",
+
+      booking.estimated_area || "",
+
+      booking.urgency || "",
+
+      booking.intent || "",
+
+      booking.manager_required ? "Да" : "Нет",
     ],
   ];
 
   await sheets.spreadsheets.values.append({
     spreadsheetId,
 
-    range: "Sheet1!A:J",
+    range: "Sheet1!A:P",
 
     valueInputOption: "USER_ENTERED",
 

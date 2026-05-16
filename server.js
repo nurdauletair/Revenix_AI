@@ -6,6 +6,7 @@ const supabase = require("./database/supabase");
 
 const { buildPrompt } = require("./ai/prompt");
 const { extractBooking } = require("./ai/extractBooking");
+const { extractLeadInsights } = require("./ai/extractLeadInsights");
 const { createBooking } = require("./database/bookings");
 const { detectHandoff } = require("./ai/detectHandoff");
 const { notifyAdminsAboutHandoff } = require("./services/telegramAlerts");
@@ -17,11 +18,36 @@ const {
   saveMessage,
   updateCustomerMemory,
   updateCustomerLastMessage,
+  updateCustomerInsights,
 } = require("./ai/memory");
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+// =========================
+// DIRECT HANDOFF KEYWORDS
+// =========================
+
+function isDirectHandoffRequest(text = "") {
+  const lower = text.toLowerCase();
+
+  const keywords = [
+    "менеджер",
+    "оператор",
+    "человек",
+    "живой",
+    "позвоните",
+    "перезвоните",
+    "свяжитесь",
+    "хочу поговорить",
+    "адам",
+    "қоңырау",
+    "менеджермен",
+  ];
+
+  return keywords.some((word) => lower.includes(word));
+}
 
 // =========================
 // AI ASK FUNCTION
@@ -60,12 +86,7 @@ async function handleMessage({ business, channel, userId, text }) {
       channel
     );
 
-    // 2. if human already required, stop AI from continuing
-    if (customer.human_required) {
-      return "Ваш запрос уже передан менеджеру. Он скоро свяжется с вами 👌";
-    }
-
-    // 3. save user message
+    // 2. save user message immediately
     await saveMessage({
       businessId: business.id,
       customerId: customer.id,
@@ -75,37 +96,87 @@ async function handleMessage({ business, channel, userId, text }) {
       channel,
     });
 
-    // 4. update customer activity
+    // 3. update customer activity
     await updateCustomerLastMessage(customer.id);
 
-    // 5. get conversation history
+    // 4. if human already required, notify admin again and stop AI
+    if (customer.human_required) {
+      await notifyAdminsAboutHandoff({
+        business,
+        customer,
+        channel,
+        userId,
+        userText: text,
+        aiAnswer: "Клиент уже ожидает менеджера.",
+        reason:
+          customer.human_reason ||
+          "Клиент повторно написал после передачи менеджеру",
+      });
+
+      return "Ваш запрос уже передан менеджеру. Он скоро свяжется с вами 👌";
+    }
+
+    // 5. direct handoff by keywords — fast path, no need to wait AI
+    if (isDirectHandoffRequest(text)) {
+      await supabase
+        .from("customers")
+        .update({
+          human_required: true,
+          human_requested_at: new Date().toISOString(),
+          human_reason: "Клиент попросил менеджера/звонок",
+          status: "human_required",
+          lead_stage: "human_required",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", customer.id);
+
+      await notifyAdminsAboutHandoff({
+        business,
+        customer,
+        channel,
+        userId,
+        userText: text,
+        aiAnswer: "Клиент напрямую попросил менеджера.",
+        reason: "Клиент попросил менеджера/звонок",
+      });
+
+      console.log("🚨 Direct human handoff:", {
+        business: business.name,
+        userId,
+        channel,
+      });
+
+      return "Сейчас передам менеджеру, он свяжется с вами 👌";
+    }
+
+    // 6. get conversation history
     const conversationMemory = await getConversationMemory(
       business.id,
       userId,
       channel
     );
 
-    // 6. get customer memory
+    // 7. get customer memory
     const customerMemory = await getCustomerMemory(
       business.id,
       userId,
       channel
     );
 
-    // 7. build system prompt
+    // 8. build system prompt
     const systemPrompt =
       buildPrompt(business, customer) +
       "\n\n" +
       customerMemory;
 
-    // 8. ask AI
+    // 9. ask AI
     const answer = await askAI(
       systemPrompt,
       conversationMemory,
       text
     );
 
-    // 9. save AI message
+    // 10. save AI message
     await saveMessage({
       businessId: business.id,
       customerId: customer.id,
@@ -115,7 +186,7 @@ async function handleMessage({ business, channel, userId, text }) {
       channel,
     });
 
-    // 10. update customer memory
+    // 11. update customer memory
     await updateCustomerMemory(
       business.id,
       userId,
@@ -123,7 +194,34 @@ async function handleMessage({ business, channel, userId, text }) {
       channel
     );
 
-    // 11. extract booking and save to Supabase + Google Sheets
+    // 12. extract lead insights and update smart CRM
+    let insights = null;
+
+    try {
+      insights = await extractLeadInsights({
+        business,
+        customerMemory,
+        userText: text,
+        aiAnswer: answer,
+      });
+
+      if (insights) {
+        await updateCustomerInsights(customer.id, insights);
+
+        console.log("🧠 Lead insights updated:", {
+          userId,
+          lead_stage: insights.lead_stage,
+          intent: insights.intent,
+          lead_quality: insights.lead_quality,
+          room_type: insights.room_type,
+          estimated_area: insights.estimated_area,
+        });
+      }
+    } catch (insightsError) {
+      console.error("Lead insights error:", insightsError);
+    }
+
+    // 13. extract booking and save to Supabase + Google Sheets
     try {
       const bookingData = await extractBooking({
         business,
@@ -144,7 +242,24 @@ async function handleMessage({ business, channel, userId, text }) {
           notes: bookingData.notes,
           userId,
           channel,
+
+          // Smart CRM fields
+          roomType: insights?.room_type || null,
+          estimatedArea: insights?.estimated_area || null,
+          urgency: insights?.urgency || null,
+          leadQuality: insights?.lead_quality || "warm",
+          intent: insights?.intent || bookingData.service || null,
+          managerRequired: false,
         });
+
+        await supabase
+          .from("customers")
+          .update({
+            status: "booking_created",
+            lead_stage: "booking_created",
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", customer.id);
 
         console.log("✅ Booking created:", {
           business: business.name,
@@ -158,12 +273,14 @@ async function handleMessage({ business, channel, userId, text }) {
       console.error("Booking extraction/save error:", bookingError);
     }
 
-    // 12. detect human handoff and notify admins
+    // 14. detect human handoff with AI fallback
     try {
       const handoff = await detectHandoff({
         userText: text,
         aiAnswer: answer,
       });
+
+      console.log("HANDOFF RESULT:", handoff);
 
       if (handoff?.handoff_required) {
         await supabase
@@ -173,6 +290,8 @@ async function handleMessage({ business, channel, userId, text }) {
             human_requested_at: new Date().toISOString(),
             human_reason: handoff.reason || "Нужен менеджер",
             status: "human_required",
+            lead_stage: "human_required",
+            updated_at: new Date().toISOString(),
           })
           .eq("id", customer.id);
 
