@@ -221,6 +221,8 @@ async function handleMessage({ business, channel, userId, text }) {
       console.error("Lead insights error:", insightsError);
     }
 
+    let bookingCreated = false;
+
     // 13. extract booking and save to Supabase + Google Sheets
     try {
       const bookingData = await extractBooking({
@@ -252,6 +254,8 @@ async function handleMessage({ business, channel, userId, text }) {
           managerRequired: false,
         });
 
+        bookingCreated = true;
+
         await supabase
           .from("customers")
           .update({
@@ -271,6 +275,10 @@ async function handleMessage({ business, channel, userId, text }) {
       }
     } catch (bookingError) {
       console.error("Booking extraction/save error:", bookingError);
+    }
+
+    if (bookingCreated) {
+      return answer;
     }
 
     // 14. detect human handoff with AI fallback

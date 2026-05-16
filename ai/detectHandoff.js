@@ -6,14 +6,32 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+function detectHandoffByKeywords(text = "") {
+  const lower = text.toLowerCase();
+
+  const keywords = [
+    "менеджер",
+    "оператор",
+    "человек",
+    "живой человек",
+    "позвоните",
+    "перезвоните",
+    "свяжитесь со мной",
+    "хочу поговорить",
+    "можно с человеком",
+    "адам",
+    "оператормен",
+    "менеджермен",
+    "қоңырау",
+  ];
+
+  return keywords.some((word) => lower.includes(word));
+}
+
 function extractJson(text) {
   try {
     const match = text.match(/\{[\s\S]*\}/);
-
-    if (!match) {
-      return null;
-    }
-
+    if (!match) return null;
     return JSON.parse(match[0]);
   } catch (err) {
     return null;
@@ -21,6 +39,14 @@ function extractJson(text) {
 }
 
 async function detectHandoff({ userText, aiAnswer }) {
+  // 1. Быстрый и надежный вариант: клиент сам просит человека
+  if (detectHandoffByKeywords(userText)) {
+    return {
+      handoff_required: true,
+      reason: "Клиент попросил менеджера/звонок",
+    };
+  }
+
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -29,33 +55,22 @@ async function detectHandoff({ userText, aiAnswer }) {
         {
           role: "system",
           content: `
-Ты анализируешь диалог клиента с бизнесом.
+Ты CRM-аналитик.
 
-Определи, нужно ли срочно передать клиента менеджеру.
+Твоя задача — определить, просит ли КЛИЕНТ живого менеджера.
 
 Верни строго JSON:
 
 {
-  "handoff_required": true,
-  "reason": "..."
-}
-
-или
-
-{
-  "handoff_required": false,
+  "handoff_required": true/false,
   "reason": ""
 }
 
-handoff_required = true если:
-- клиент просит менеджера
-- клиент просит человека
-- клиент просит оператора
-- клиент просит звонок
-- клиент злится
-- клиент жалуется
-- вопрос сложный
-- клиент хочет индивидуальные условия
+ВАЖНО:
+- Анализируй в первую очередь сообщение клиента.
+- НЕ ставь handoff_required=true только потому что AI написал "передам заявку менеджеру".
+- Фразы AI типа "передам заявку", "менеджер свяжется", "заявка передана" НЕ означают, что клиент просит менеджера.
+- handoff_required=true только если клиент сам просит человека/менеджера/оператора/звонок, злится, жалуется или требует ручного участия.
           `,
         },
         {
@@ -72,14 +87,11 @@ ${aiAnswer}
     });
 
     const raw = completion.choices[0].message.content;
-
     console.log("HANDOFF RAW RESPONSE:", raw);
 
     const parsed = extractJson(raw);
 
     if (!parsed) {
-      console.error("Failed to parse handoff JSON");
-
       return {
         handoff_required: false,
         reason: "",
