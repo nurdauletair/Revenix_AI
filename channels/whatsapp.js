@@ -31,7 +31,17 @@ async function findBusinessByPhoneNumberId(phoneNumberId) {
 }
 
 // =========================
+// SMALL DELAY
+// =========================
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// =========================
 // SEND MESSAGE
+// Поддерживает разделение ответа через:
+// ---NEXT_MESSAGE---
 // =========================
 
 async function sendWhatsAppMessage({ business, to, text }) {
@@ -39,23 +49,33 @@ async function sendWhatsAppMessage({ business, to, text }) {
 
   const url = `https://graph.facebook.com/v20.0/${business.whatsapp_phone_number_id}/messages`;
 
-  await axios.post(
-    url,
-    {
-      messaging_product: "whatsapp",
-      to: String(to),
-      type: "text",
-      text: {
-        body: text,
+  const parts = String(text || "")
+    .split("---NEXT_MESSAGE---")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  for (const part of parts) {
+    await axios.post(
+      url,
+      {
+        messaging_product: "whatsapp",
+        to: String(to),
+        type: "text",
+        text: {
+          body: part,
+        },
       },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    // Пауза, чтобы два сообщения пришли красиво по очереди
+    await wait(700);
+  }
 }
 
 // =========================
@@ -232,7 +252,6 @@ ${imageAnalysis}
 ${caption}
 `;
 
-            // Фото лучше не держать слишком долго, но 4 секунды можно оставить.
             shouldBatch = true;
           }
 
@@ -299,7 +318,6 @@ ${msg.document?.filename || "file"}
             continue;
           }
 
-          // fallback, если batching отключим для какого-то типа
           await processBatchedWhatsAppMessage({
             business,
             channel: "whatsapp",
