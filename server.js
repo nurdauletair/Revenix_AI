@@ -7,8 +7,11 @@ const supabase = require("./database/supabase");
 const { buildPrompt } = require("./ai/prompt");
 const { extractCRM } = require("./ai/extractCRM");
 const { createBooking } = require("./database/bookings");
-const { detectHandoff } = require("./ai/detectHandoff");
-const { notifyAdminsAboutHandoff } = require("./services/telegramAlerts");
+
+const {
+  notifyAdminsAboutHandoff,
+  notifyAdminsAboutBooking,
+} = require("./services/telegramAlerts");
 
 const {
   getOrCreateCustomer,
@@ -116,7 +119,7 @@ async function processCRMInBackground({
     });
 
     if (crm.booking_ready) {
-      await createBooking({
+      const booking = await createBooking({
         business,
         customer,
 
@@ -133,7 +136,7 @@ async function processCRMInBackground({
         roomType: crm.room_type || null,
         estimatedArea: crm.estimated_area || null,
         urgency: crm.urgency || null,
-        leadQuality: crm.lead_quality || "warm",
+        leadQuality: crm.lead_quality || "hot",
         intent: crm.intent || crm.service || business.niche || null,
         managerRequired: crm.manager_required || false,
       });
@@ -143,9 +146,18 @@ async function processCRMInBackground({
         .update({
           status: "booking_created",
           lead_stage: "booking_created",
+          lead_quality: "hot",
           updated_at: new Date().toISOString(),
         })
         .eq("id", customer.id);
+
+      await notifyAdminsAboutBooking({
+        business,
+        customer,
+        booking,
+        channel,
+        userId,
+      });
 
       console.log("✅ Booking created from CRM:", {
         business: business.name,
@@ -166,14 +178,12 @@ async function processCRMInBackground({
 
 async function handleMessage({ business, channel, userId, text }) {
   try {
-    // 1. find or create customer
     const customer = await getOrCreateCustomer(
       business.id,
       userId,
       channel
     );
 
-    // 2. save user message immediately
     await saveMessage({
       businessId: business.id,
       customerId: customer.id,
@@ -183,10 +193,8 @@ async function handleMessage({ business, channel, userId, text }) {
       channel,
     });
 
-    // 3. update customer activity
     await updateCustomerLastMessage(customer.id);
 
-    // 4. if human already required, notify admin again and stop AI
     if (customer.human_required) {
       await notifyAdminsAboutHandoff({
         business,
@@ -203,7 +211,6 @@ async function handleMessage({ business, channel, userId, text }) {
       return "Ваш запрос уже передан менеджеру. Он скоро свяжется с вами 👌";
     }
 
-    // 5. direct handoff by keywords — fast path, no OpenAI
     if (isDirectHandoffRequest(text)) {
       await supabase
         .from("customers")
@@ -236,34 +243,29 @@ async function handleMessage({ business, channel, userId, text }) {
       return "Сейчас передам менеджеру, он свяжется с вами 👌";
     }
 
-    // 6. get conversation history
     const conversationMemory = await getConversationMemory(
       business.id,
       userId,
       channel
     );
 
-    // 7. get customer memory
     const customerMemory = await getCustomerMemory(
       business.id,
       userId,
       channel
     );
 
-    // 8. build system prompt
     const systemPrompt =
       buildPrompt(business, customer) +
       "\n\n" +
       customerMemory;
 
-    // 9. ask AI
     const answer = await askAI(
       systemPrompt,
       conversationMemory,
       text
     );
 
-    // 10. save AI message
     await saveMessage({
       businessId: business.id,
       customerId: customer.id,
@@ -273,7 +275,6 @@ async function handleMessage({ business, channel, userId, text }) {
       channel,
     });
 
-    // 11. update customer memory
     await updateCustomerMemory(
       business.id,
       userId,
@@ -281,15 +282,15 @@ async function handleMessage({ business, channel, userId, text }) {
       channel
     );
 
-    // 12. process CRM + booking in background
     const conversationText = conversationMemory
-    .map((m) => `${m.role}: ${m.content}`)
-    .join("\n");
+      .map((m) => `${m.role}: ${m.content}`)
+      .join("\n");
 
     processCRMInBackground({
       business,
       customer,
       customerMemory,
+      conversationText,
       userText: text,
       aiAnswer: answer,
       userId,
@@ -298,7 +299,6 @@ async function handleMessage({ business, channel, userId, text }) {
       console.error("CRM background error:", err);
     });
 
-    // 13. return answer immediately
     return answer;
   } catch (err) {
     console.error("AI ERROR:", err);
