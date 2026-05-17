@@ -31,6 +31,92 @@ bot.on("polling_error", (err) => {
 let currentBusiness = null;
 
 // ======================
+// HELPERS
+// ======================
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function leadEmoji(quality) {
+  if (quality === "hot") return "🔥";
+  if (quality === "warm") return "🟡";
+  if (quality === "cold") return "❄️";
+  return "⚪";
+}
+
+function formatDate(value) {
+  if (!value) return "не указано";
+
+  try {
+    return new Date(value).toLocaleString("ru-RU", {
+      timeZone: "Asia/Almaty",
+    });
+  } catch {
+    return "не указано";
+  }
+}
+
+async function sendTelegramMessage(chatId, text, replyMarkup = null) {
+  const payload = {
+    chat_id: chatId,
+    text,
+    parse_mode: "HTML",
+  };
+
+  if (replyMarkup) {
+    payload.reply_markup = replyMarkup;
+  }
+
+  return bot.sendMessage(chatId, text, {
+    parse_mode: "HTML",
+    reply_markup: replyMarkup || undefined,
+  });
+}
+
+// ======================
+// SET TELEGRAM COMMANDS MENU
+// ======================
+
+async function setTelegramCommands() {
+  try {
+    await bot.setMyCommands([
+      {
+        command: "chats",
+        description: "Последние клиенты",
+      },
+      {
+        command: "clients",
+        description: "Карточка клиента по номеру",
+      },
+      {
+        command: "requests",
+        description: "Заявки",
+      },
+      {
+        command: "stats",
+        description: "Статистика",
+      },
+      {
+        command: "leads",
+        description: "Статусы лидов",
+      },
+      {
+        command: "myid",
+        description: "Узнать Telegram ID",
+      },
+    ]);
+
+    console.log("✅ Telegram commands menu updated");
+  } catch (err) {
+    console.error("Set Telegram commands error:", err.message);
+  }
+}
+
+// ======================
 // LOAD BUSINESS
 // ======================
 
@@ -55,7 +141,11 @@ async function loadBusiness() {
   console.log(`✅ Telegram bot запущен для бизнеса: ${data.name}`);
 }
 
-loadBusiness();
+loadBusiness()
+  .then(() => setTelegramCommands())
+  .catch((err) => {
+    console.error("Telegram init error:", err);
+  });
 
 // ======================
 // ADMIN CHECK
@@ -80,16 +170,21 @@ async function isAdmin(userId) {
 }
 
 // ======================
-// HELPERS
+// CUSTOMER HELPERS
 // ======================
 
-async function findCustomerByUserId(userId) {
-  const { data, error } = await supabase
+async function findCustomerByUserId(userId, channel = null) {
+  let query = supabase
     .from("customers")
     .select("*")
     .eq("business_id", currentBusiness.id)
-    .eq("user_id", String(userId))
-    .maybeSingle();
+    .eq("user_id", String(userId));
+
+  if (channel) {
+    query = query.eq("channel", channel);
+  }
+
+  const { data, error } = await query.maybeSingle();
 
   if (error) {
     console.error("Customer find error:", error);
@@ -110,12 +205,15 @@ async function updateCustomerHumanMode({
         human_requested_at: new Date().toISOString(),
         human_reason: reason || "Отключено менеджером вручную",
         status: "human_required",
+        lead_stage: "human_required",
+        updated_at: new Date().toISOString(),
       }
     : {
         human_required: false,
         human_requested_at: null,
         human_reason: null,
         status: "new",
+        updated_at: new Date().toISOString(),
       };
 
   const { data, error } = await supabase
@@ -132,6 +230,161 @@ async function updateCustomerHumanMode({
   }
 
   return data;
+}
+
+// ======================
+// CRM: RECENT CHATS
+// ======================
+
+async function getRecentChats() {
+  const { data: customers, error } = await supabase
+    .from("customers")
+    .select("*")
+    .eq("business_id", currentBusiness.id)
+    .order("last_message_at", { ascending: false })
+    .limit(10);
+
+  if (error) {
+    console.error("Recent chats error:", error);
+    throw error;
+  }
+
+  if (!customers || !customers.length) {
+    return {
+      text: "Пока клиентов нет.",
+      buttons: null,
+    };
+  }
+
+  const lines = customers.map((c, index) => {
+    const emoji = leadEmoji(c.lead_quality);
+    const name = c.name || c.user_id || "Без имени";
+    const status = c.status || "new";
+    const intent = c.intent || c.need || "интерес не указан";
+    const time = formatDate(c.last_message_at);
+
+    return `${index + 1}. ${emoji} <b>${escapeHtml(name)}</b>
+📱 <code>${escapeHtml(c.user_id)}</code>
+📲 ${escapeHtml(c.channel || "unknown")}
+📌 ${escapeHtml(status)}
+💬 ${escapeHtml(intent)}
+🕒 ${escapeHtml(time)}
+Команда: <code>/clients ${escapeHtml(c.user_id)}</code>`;
+  });
+
+  const text = `
+📋 <b>Последние клиенты</b>
+
+🏢 <b>Бизнес:</b> ${escapeHtml(currentBusiness.name || "не указано")}
+
+${lines.join("\n\n")}
+`;
+
+  const buttons = {
+    inline_keyboard: customers.map((c) => [
+      {
+        text: `${leadEmoji(c.lead_quality)} ${c.name || c.user_id}`,
+        callback_data: `client:${c.channel}:${c.user_id}`,
+      },
+    ]),
+  };
+
+  return {
+    text,
+    buttons,
+  };
+}
+
+// ======================
+// CRM: CLIENT CARD
+// ======================
+
+async function getClientCard({ userId, channel = null }) {
+  const customer = await findCustomerByUserId(userId, channel);
+
+  if (!customer) {
+    return {
+      text: `Клиент <code>${escapeHtml(userId)}</code> не найден.`,
+      buttons: null,
+    };
+  }
+
+  const { data: booking } = await supabase
+    .from("bookings")
+    .select("*")
+    .eq("business_id", currentBusiness.id)
+    .eq("user_id", String(userId))
+    .eq("channel", customer.channel)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const { data: messages } = await supabase
+    .from("messages")
+    .select("role, content, created_at")
+    .eq("business_id", currentBusiness.id)
+    .eq("user_id", String(userId))
+    .eq("channel", customer.channel)
+    .order("created_at", { ascending: false })
+    .limit(8);
+
+  const recentMessages = (messages || [])
+    .reverse()
+    .map((m) => {
+      const role = m.role === "assistant" ? "🤖 AI" : "👤 Клиент";
+      return `<b>${role}:</b> ${escapeHtml(m.content || "")}`;
+    })
+    .join("\n\n");
+
+  const text = `
+👤 <b>Карточка клиента</b>
+
+📱 <b>User ID:</b> <code>${escapeHtml(customer.user_id)}</code>
+📲 <b>Канал:</b> ${escapeHtml(customer.channel || "не указано")}
+🔥 <b>Лид:</b> ${escapeHtml(customer.lead_quality || "warm")}
+📌 <b>Статус:</b> ${escapeHtml(customer.status || "new")}
+🤖 <b>AI:</b> ${customer.human_required ? "ОТКЛЮЧЕН" : "включен"}
+
+👤 <b>Имя:</b> ${escapeHtml(customer.name || booking?.customer_name || "не указано")}
+📞 <b>Телефон:</b> ${escapeHtml(customer.phone || booking?.customer_phone || customer.user_id || "не указано")}
+
+💬 <b>Интерес:</b> ${escapeHtml(customer.intent || customer.need || "не указано")}
+❓ <b>Возражение:</b> ${escapeHtml(customer.objection || "не указано")}
+🏠 <b>Комната:</b> ${escapeHtml(customer.room_type || booking?.room_type || "не указано")}
+📐 <b>Площадь:</b> ${escapeHtml(customer.estimated_area || booking?.estimated_area || "не указано")}
+🕒 <b>Срочность:</b> ${escapeHtml(customer.urgency || booking?.urgency || "не указано")}
+
+📍 <b>Адрес:</b> ${escapeHtml(booking?.address || customer.address || "не указано")}
+🕒 <b>Время замера:</b> ${escapeHtml(booking?.preferred_time || "не указано")}
+🧾 <b>Услуга:</b> ${escapeHtml(booking?.service || "не указано")}
+
+🕒 <b>Последняя активность:</b> ${escapeHtml(formatDate(customer.last_message_at))}
+
+<b>Последние сообщения:</b>
+${recentMessages || "Сообщений нет."}
+`;
+
+  const buttons = {
+    inline_keyboard: [
+      [
+        {
+          text: "✅ Вернуть AI",
+          callback_data: `ai_on:${customer.user_id}`,
+        },
+      ],
+      [
+        {
+          text: "⛔ Оставить менеджеру",
+          callback_data: `ai_off:${customer.user_id}`,
+        },
+      ],
+    ],
+  };
+
+  return {
+    text,
+    buttons,
+  };
 }
 
 // ======================
@@ -153,16 +406,31 @@ bot.on("callback_query", async (query) => {
     });
   }
 
-  const [action, userId] = data.split(":");
-
-  if (!action || !userId) {
-    return bot.answerCallbackQuery(query.id, {
-      text: "Некорректная кнопка",
-      show_alert: true,
-    });
-  }
-
   try {
+    if (data.startsWith("client:")) {
+      const [, channel, targetUserId] = data.split(":");
+
+      const result = await getClientCard({
+        userId: targetUserId,
+        channel,
+      });
+
+      await bot.answerCallbackQuery(query.id, {
+        text: "Карточка клиента",
+      });
+
+      return sendTelegramMessage(chatId, result.text, result.buttons);
+    }
+
+    const [action, userId] = data.split(":");
+
+    if (!action || !userId) {
+      return bot.answerCallbackQuery(query.id, {
+        text: "Некорректная кнопка",
+        show_alert: true,
+      });
+    }
+
     if (action === "ai_on") {
       const customer = await updateCustomerHumanMode({
         userId,
@@ -180,9 +448,9 @@ bot.on("callback_query", async (query) => {
         text: "AI включен",
       });
 
-      return bot.sendMessage(
+      return sendTelegramMessage(
         chatId,
-        `✅ AI снова включен для клиента: ${userId}`
+        `✅ AI снова включен для клиента: <code>${escapeHtml(userId)}</code>`
       );
     }
 
@@ -204,9 +472,9 @@ bot.on("callback_query", async (query) => {
         text: "AI оставлен отключенным",
       });
 
-      return bot.sendMessage(
+      return sendTelegramMessage(
         chatId,
-        `⛔ AI оставлен отключенным для клиента: ${userId}`
+        `⛔ AI оставлен отключенным для клиента: <code>${escapeHtml(userId)}</code>`
       );
     }
 
@@ -237,7 +505,8 @@ bot.onText(/\/start/, async (msg) => {
 Команды администратора:
 
 /myid — узнать свой Telegram ID
-/clients — список клиентов
+/chats — последние клиенты
+/clients USER_ID — карточка клиента
 /requests — заявки
 /stats — статистика
 /leads — статусы лидов
@@ -247,7 +516,7 @@ bot.onText(/\/start/, async (msg) => {
 /status USER_ID — проверить статус клиента
 `;
 
-  bot.sendMessage(chatId, text);
+  sendTelegramMessage(chatId, text);
 });
 
 // ======================
@@ -255,7 +524,66 @@ bot.onText(/\/start/, async (msg) => {
 // ======================
 
 bot.onText(/\/myid/, async (msg) => {
-  bot.sendMessage(msg.chat.id, `Ваш Telegram ID: ${msg.chat.id}`);
+  sendTelegramMessage(msg.chat.id, `Ваш Telegram ID: <code>${msg.chat.id}</code>`);
+});
+
+// ======================
+// /chats
+// ======================
+
+bot.onText(/\/chats/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  const isUserAdmin = await isAdmin(chatId);
+  if (!isUserAdmin) return;
+
+  if (!currentBusiness) {
+    return sendTelegramMessage(chatId, "Бизнес ещё не загружен");
+  }
+
+  try {
+    const result = await getRecentChats();
+
+    return sendTelegramMessage(chatId, result.text, result.buttons);
+  } catch (error) {
+    console.error("Chats error:", error);
+    return sendTelegramMessage(chatId, "Ошибка при получении последних клиентов");
+  }
+});
+
+// ======================
+// /clients USER_ID
+// ======================
+
+bot.onText(/\/clients(?:\s+(.+))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+
+  const isUserAdmin = await isAdmin(chatId);
+  if (!isUserAdmin) return;
+
+  if (!currentBusiness) {
+    return sendTelegramMessage(chatId, "Бизнес ещё не загружен");
+  }
+
+  const userId = match?.[1]?.trim();
+
+  if (!userId) {
+    return sendTelegramMessage(
+      chatId,
+      `Напишите номер клиента. Например:\n<code>/clients 77051112233</code>\n\nИли используйте /chats, чтобы выбрать клиента кнопкой.`
+    );
+  }
+
+  try {
+    const result = await getClientCard({
+      userId,
+    });
+
+    return sendTelegramMessage(chatId, result.text, result.buttons);
+  } catch (error) {
+    console.error("Client card error:", error);
+    return sendTelegramMessage(chatId, "Ошибка при получении карточки клиента");
+  }
 });
 
 // ======================
@@ -267,7 +595,7 @@ bot.onText(/\/ai_on (.+)/, async (msg, match) => {
   if (!isUserAdmin) return;
 
   if (!currentBusiness) {
-    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+    return sendTelegramMessage(msg.chat.id, "Бизнес ещё не загружен");
   }
 
   const userId = match[1].trim();
@@ -279,13 +607,13 @@ bot.onText(/\/ai_on (.+)/, async (msg, match) => {
     });
 
     if (!customer) {
-      return bot.sendMessage(msg.chat.id, `Клиент не найден: ${userId}`);
+      return sendTelegramMessage(msg.chat.id, `Клиент не найден: <code>${escapeHtml(userId)}</code>`);
     }
 
-    bot.sendMessage(msg.chat.id, `✅ AI снова включен для клиента: ${userId}`);
+    sendTelegramMessage(msg.chat.id, `✅ AI снова включен для клиента: <code>${escapeHtml(userId)}</code>`);
   } catch (error) {
     console.error("AI on error:", error);
-    bot.sendMessage(msg.chat.id, "Ошибка при включении AI");
+    sendTelegramMessage(msg.chat.id, "Ошибка при включении AI");
   }
 });
 
@@ -298,7 +626,7 @@ bot.onText(/\/ai_off (.+)/, async (msg, match) => {
   if (!isUserAdmin) return;
 
   if (!currentBusiness) {
-    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+    return sendTelegramMessage(msg.chat.id, "Бизнес ещё не загружен");
   }
 
   const userId = match[1].trim();
@@ -311,13 +639,13 @@ bot.onText(/\/ai_off (.+)/, async (msg, match) => {
     });
 
     if (!customer) {
-      return bot.sendMessage(msg.chat.id, `Клиент не найден: ${userId}`);
+      return sendTelegramMessage(msg.chat.id, `Клиент не найден: <code>${escapeHtml(userId)}</code>`);
     }
 
-    bot.sendMessage(msg.chat.id, `⛔ AI отключен для клиента: ${userId}`);
+    sendTelegramMessage(msg.chat.id, `⛔ AI отключен для клиента: <code>${escapeHtml(userId)}</code>`);
   } catch (error) {
     console.error("AI off error:", error);
-    bot.sendMessage(msg.chat.id, "Ошибка при отключении AI");
+    sendTelegramMessage(msg.chat.id, "Ошибка при отключении AI");
   }
 });
 
@@ -330,7 +658,7 @@ bot.onText(/\/status (.+)/, async (msg, match) => {
   if (!isUserAdmin) return;
 
   if (!currentBusiness) {
-    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+    return sendTelegramMessage(msg.chat.id, "Бизнес ещё не загружен");
   }
 
   const userId = match[1].trim();
@@ -339,70 +667,26 @@ bot.onText(/\/status (.+)/, async (msg, match) => {
     const customer = await findCustomerByUserId(userId);
 
     if (!customer) {
-      return bot.sendMessage(msg.chat.id, `Клиент не найден: ${userId}`);
+      return sendTelegramMessage(msg.chat.id, `Клиент не найден: <code>${escapeHtml(userId)}</code>`);
     }
 
     const text = `
-👤 Клиент: ${customer.name || "Без имени"}
-🆔 User ID: ${customer.user_id}
-🔗 Канал: ${customer.channel || "неизвестно"}
-📞 Телефон: ${customer.phone || "не указан"}
-📍 Адрес: ${customer.address || "не указан"}
-📌 Статус: ${customer.status || "new"}
+👤 <b>Клиент:</b> ${escapeHtml(customer.name || "Без имени")}
+🆔 <b>User ID:</b> <code>${escapeHtml(customer.user_id)}</code>
+🔗 <b>Канал:</b> ${escapeHtml(customer.channel || "неизвестно")}
+📞 <b>Телефон:</b> ${escapeHtml(customer.phone || "не указан")}
+📍 <b>Адрес:</b> ${escapeHtml(customer.address || "не указан")}
+📌 <b>Статус:</b> ${escapeHtml(customer.status || "new")}
 
-🤖 AI отключен: ${customer.human_required ? "ДА" : "НЕТ"}
-📌 Причина: ${customer.human_reason || "нет"}
+🤖 <b>AI отключен:</b> ${customer.human_required ? "ДА" : "НЕТ"}
+📌 <b>Причина:</b> ${escapeHtml(customer.human_reason || "нет")}
 `;
 
-    bot.sendMessage(msg.chat.id, text);
+    sendTelegramMessage(msg.chat.id, text);
   } catch (error) {
     console.error("Status error:", error);
-    bot.sendMessage(msg.chat.id, "Ошибка при получении статуса");
+    sendTelegramMessage(msg.chat.id, "Ошибка при получении статуса");
   }
-});
-
-// ======================
-// /clients
-// ======================
-
-bot.onText(/\/clients/, async (msg) => {
-  const isUserAdmin = await isAdmin(msg.chat.id);
-  if (!isUserAdmin) return;
-
-  if (!currentBusiness) {
-    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
-  }
-
-  const { data, error } = await supabase
-    .from("customers")
-    .select("*")
-    .eq("business_id", currentBusiness.id)
-    .order("last_message_at", { ascending: false })
-    .limit(30);
-
-  if (error) {
-    console.error("Clients error:", error);
-    return bot.sendMessage(msg.chat.id, "Ошибка при получении клиентов");
-  }
-
-  if (!data || !data.length) {
-    return bot.sendMessage(msg.chat.id, "Нет клиентов");
-  }
-
-  let text = `📋 Клиенты: ${currentBusiness.name}\n\n`;
-
-  data.forEach((c, index) => {
-    text += `${index + 1}. 👤 ${c.name || "Без имени"}\n`;
-    text += `🔗 Канал: ${c.channel || "неизвестно"}\n`;
-    text += `📞 Телефон: ${c.phone || "не указан"}\n`;
-    text += `📍 Адрес: ${c.address || "не указан"}\n`;
-    text += `🧾 Потребность: ${c.need || "не указана"}\n`;
-    text += `📌 Статус: ${c.status || "new"}\n`;
-    text += `🤖 AI: ${c.human_required ? "ОТКЛЮЧЕН" : "включен"}\n`;
-    text += `🆔 User ID: ${c.user_id}\n\n`;
-  });
-
-  bot.sendMessage(msg.chat.id, text);
 });
 
 // ======================
@@ -414,33 +698,43 @@ bot.onText(/\/leads/, async (msg) => {
   if (!isUserAdmin) return;
 
   if (!currentBusiness) {
-    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+    return sendTelegramMessage(msg.chat.id, "Бизнес ещё не загружен");
   }
 
   const { data, error } = await supabase
     .from("customers")
-    .select("status")
+    .select("status, lead_quality")
     .eq("business_id", currentBusiness.id);
 
   if (error) {
     console.error("Leads error:", error);
-    return bot.sendMessage(msg.chat.id, "Ошибка при получении лидов");
+    return sendTelegramMessage(msg.chat.id, "Ошибка при получении лидов");
   }
 
-  const stats = {};
+  const statusStats = {};
+  const qualityStats = {};
 
   (data || []).forEach((c) => {
     const status = c.status || "new";
-    stats[status] = (stats[status] || 0) + 1;
+    const quality = c.lead_quality || "unknown";
+
+    statusStats[status] = (statusStats[status] || 0) + 1;
+    qualityStats[quality] = (qualityStats[quality] || 0) + 1;
   });
 
-  let text = `📊 Лиды: ${currentBusiness.name}\n\n`;
+  let text = `📊 <b>Лиды:</b> ${escapeHtml(currentBusiness.name)}\n\n`;
 
-  for (let key in stats) {
-    text += `${key}: ${stats[key]}\n`;
-  }
+  text += `<b>По качеству:</b>\n`;
+  Object.keys(qualityStats).forEach((key) => {
+    text += `${leadEmoji(key)} ${escapeHtml(key)}: ${qualityStats[key]}\n`;
+  });
 
-  bot.sendMessage(msg.chat.id, text);
+  text += `\n<b>По статусам:</b>\n`;
+  Object.keys(statusStats).forEach((key) => {
+    text += `${escapeHtml(key)}: ${statusStats[key]}\n`;
+  });
+
+  sendTelegramMessage(msg.chat.id, text);
 });
 
 // ======================
@@ -452,7 +746,7 @@ bot.onText(/\/stats/, async (msg) => {
   if (!isUserAdmin) return;
 
   if (!currentBusiness) {
-    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+    return sendTelegramMessage(msg.chat.id, "Бизнес ещё не загружен");
   }
 
   const { count: messagesCount } = await supabase
@@ -462,6 +756,11 @@ bot.onText(/\/stats/, async (msg) => {
 
   const { count: customersCount } = await supabase
     .from("customers")
+    .select("*", { count: "exact", head: true })
+    .eq("business_id", currentBusiness.id);
+
+  const { count: bookingsCount } = await supabase
+    .from("bookings")
     .select("*", { count: "exact", head: true })
     .eq("business_id", currentBusiness.id);
 
@@ -483,31 +782,20 @@ bot.onText(/\/stats/, async (msg) => {
     .eq("business_id", currentBusiness.id)
     .eq("channel", "whatsapp");
 
-  const { count: requestCount } = await supabase
-    .from("customers")
-    .select("*", { count: "exact", head: true })
-    .eq("business_id", currentBusiness.id)
-    .in("status", [
-      "measurement_requested",
-      "appointment_requested",
-      "lead_ready",
-      "human_required",
-    ]);
-
   const text = `
-📈 Статистика: ${currentBusiness.name}
+📈 <b>Статистика:</b> ${escapeHtml(currentBusiness.name)}
 
 💬 Сообщений: ${messagesCount || 0}
 👥 Клиентов: ${customersCount || 0}
-🔥 Заявок/обращений: ${requestCount || 0}
+🔥 Заявок: ${bookingsCount || 0}
 
-Каналы:
+<b>Каналы:</b>
 Telegram: ${telegramCount || 0}
 Instagram: ${instagramCount || 0}
 WhatsApp: ${whatsappCount || 0}
 `;
 
-  bot.sendMessage(msg.chat.id, text);
+  sendTelegramMessage(msg.chat.id, text);
 });
 
 // ======================
@@ -519,55 +807,49 @@ bot.onText(/\/requests/, async (msg) => {
   if (!isUserAdmin) return;
 
   if (!currentBusiness) {
-    return bot.sendMessage(msg.chat.id, "Бизнес ещё не загружен");
+    return sendTelegramMessage(msg.chat.id, "Бизнес ещё не загружен");
   }
 
   const { data, error } = await supabase
-    .from("customers")
+    .from("bookings")
     .select("*")
     .eq("business_id", currentBusiness.id)
-    .in("status", [
-      "measurement_requested",
-      "appointment_requested",
-      "lead_ready",
-      "human_required",
-    ])
-    .order("updated_at", { ascending: false })
-    .limit(30);
+    .order("created_at", { ascending: false })
+    .limit(20);
 
   if (error) {
     console.error("Requests error:", error);
-    return bot.sendMessage(msg.chat.id, "Ошибка при получении заявок");
+    return sendTelegramMessage(msg.chat.id, "Ошибка при получении заявок");
   }
 
   if (!data || !data.length) {
-    return bot.sendMessage(msg.chat.id, "Нет заявок");
+    return sendTelegramMessage(msg.chat.id, "Нет заявок");
   }
 
-  let text = `🔥 Заявки: ${currentBusiness.name}\n\n`;
+  let text = `🔥 <b>Заявки:</b> ${escapeHtml(currentBusiness.name)}\n\n`;
 
-  data.forEach((c, index) => {
-    text += `${index + 1}. 👤 ${c.name || "Без имени"}\n`;
-    text += `🔗 Канал: ${c.channel || "неизвестно"}\n`;
-    text += `📞 Телефон: ${c.phone || "не указан"}\n`;
-    text += `📍 Адрес: ${c.address || "не указан"}\n`;
-    text += `🧾 Потребность: ${c.need || "не указана"}\n`;
-    text += `📌 Статус: ${c.status || "new"}\n`;
-    text += `🤖 AI: ${c.human_required ? "ОТКЛЮЧЕН" : "включен"}\n`;
-    text += `🆔 User ID: ${c.user_id}\n`;
-
-    if (c.human_required) {
-      text += `🔁 Вернуть AI: /ai_on ${c.user_id}\n`;
-    }
-
-    if (c.extra_data && Object.keys(c.extra_data).length > 0) {
-      text += `➕ Доп. данные: ${JSON.stringify(c.extra_data)}\n`;
-    }
-
-    text += "\n";
+  data.forEach((b, index) => {
+    text += `${index + 1}. ${leadEmoji(b.lead_quality)} <b>${escapeHtml(b.customer_name || "Без имени")}</b>\n`;
+    text += `📱 <code>${escapeHtml(b.user_id)}</code>\n`;
+    text += `📲 ${escapeHtml(b.channel || "неизвестно")}\n`;
+    text += `📍 ${escapeHtml(b.address || "адрес не указан")}\n`;
+    text += `🕒 ${escapeHtml(b.preferred_time || "время не указано")}\n`;
+    text += `🏠 ${escapeHtml(b.room_type || "комната не указана")}\n`;
+    text += `📐 ${escapeHtml(b.estimated_area || "площадь не указана")}\n`;
+    text += `📌 ${escapeHtml(b.status || "new")}\n`;
+    text += `Команда: <code>/clients ${escapeHtml(b.user_id)}</code>\n\n`;
   });
 
-  bot.sendMessage(msg.chat.id, text);
+  const buttons = {
+    inline_keyboard: data.map((b) => [
+      {
+        text: `${leadEmoji(b.lead_quality)} ${b.customer_name || b.user_id}`,
+        callback_data: `client:${b.channel}:${b.user_id}`,
+      },
+    ]),
+  };
+
+  sendTelegramMessage(msg.chat.id, text, buttons);
 });
 
 // ======================
@@ -583,7 +865,7 @@ bot.on("message", async (msg) => {
     if (text.startsWith("/")) return;
 
     if (!currentBusiness) {
-      return bot.sendMessage(chatId, "Бот ещё загружается. Попробуйте снова.");
+      return sendTelegramMessage(chatId, "Бот ещё загружается. Попробуйте снова.");
     }
 
     bot.sendChatAction(chatId, "typing");
@@ -595,11 +877,11 @@ bot.on("message", async (msg) => {
       text,
     });
 
-    bot.sendMessage(chatId, answer);
+    sendTelegramMessage(chatId, answer);
   } catch (error) {
     console.error("Telegram message error:", error);
 
-    bot.sendMessage(
+    sendTelegramMessage(
       msg.chat.id,
       "Извините, сейчас техническая ошибка. Менеджер скоро ответит."
     );
