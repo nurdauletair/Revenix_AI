@@ -93,7 +93,7 @@ async function sendFollowUp1() {
     .eq("channel", "whatsapp")
     .is("followup_1_sent_at", null)
     .eq("human_required", false)
-    .lte("last_message_at", hoursAgo(0.01))
+    .lte("last_message_at", hoursAgo(1))
     .gte("last_message_at", hoursAgo(23))
     .limit(50);
 
@@ -159,7 +159,7 @@ async function sendFollowUp2() {
     .is("followup_2_sent_at", null)
     .eq("channel", "whatsapp")
     .eq("human_required", false)
-    .lte("last_message_at", hoursAgo(0.02))
+    .lte("last_message_at", hoursAgo(3))
     .gte("last_message_at", hoursAgo(23))
     .limit(50);
 
@@ -226,17 +226,18 @@ async function runFollowUps() {
 function startFollowUpWorker() {
   console.log("✅ Follow-up worker started");
 
-  // Запускаем сразу, не ждём 1 минуту
+  // Запускаем сразу после старта сервера.
+  // Если клиенту ещё не исполнился 1 час, сообщение не уйдёт.
   runFollowUps().catch((err) => {
     console.error("Follow-up initial run error:", err);
   });
 
-  // Тестовый режим: проверка каждую минуту
+  // Production: проверка каждые 10 минут
   setInterval(() => {
     runFollowUps().catch((err) => {
       console.error("Follow-up worker error:", err);
     });
-  }, 60 * 1000);
+  }, 10 * 60 * 1000);
 }
 
 module.exports = {
