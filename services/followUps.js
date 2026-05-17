@@ -5,10 +5,29 @@ function hoursAgo(hours) {
   return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 }
 
+function isKazakhCustomer(customer) {
+  const text = `
+${customer.intent || ""}
+${customer.source_note || ""}
+${customer.last_intent || ""}
+${customer.need || ""}
+`.toLowerCase();
+
+  return (
+    text.includes("қ") ||
+    text.includes("ә") ||
+    text.includes("ң") ||
+    text.includes("ғ") ||
+    text.includes("ү") ||
+    text.includes("ұ") ||
+    text.includes("ө") ||
+    text.includes("і") ||
+    text.includes("потолок")
+  );
+}
+
 function getFollowUp1Text(customer) {
-  const isKazakh =
-    (customer.intent || "").toLowerCase().includes("потолок") ||
-    (customer.source_note || "").toLowerCase().includes("қазақ");
+  const isKazakh = isKazakhCustomer(customer);
 
   if (isKazakh) {
     return `Сәлеметсіз бе 😊
@@ -32,9 +51,7 @@ function getFollowUp1Text(customer) {
 }
 
 function getFollowUp2Text(customer) {
-  const isKazakh =
-    (customer.intent || "").toLowerCase().includes("потолок") ||
-    (customer.source_note || "").toLowerCase().includes("қазақ");
+  const isKazakh = isKazakhCustomer(customer);
 
   if (isKazakh) {
     return `Қайырлы күн 😊
@@ -111,7 +128,10 @@ async function sendFollowUp1() {
         business: business.name,
       });
     } catch (err) {
-      console.error("Follow-up 1 send error:", err.response?.data || err.message);
+      console.error(
+        "Follow-up 1 send error:",
+        err.response?.data || err.message
+      );
     }
   }
 }
@@ -160,7 +180,10 @@ async function sendFollowUp2() {
         business: business.name,
       });
     } catch (err) {
-      console.error("Follow-up 2 send error:", err.response?.data || err.message);
+      console.error(
+        "Follow-up 2 send error:",
+        err.response?.data || err.message
+      );
     }
   }
 }
@@ -173,11 +196,12 @@ async function runFollowUps() {
 function startFollowUpWorker() {
   console.log("✅ Follow-up worker started");
 
+  // ТЕСТОВЫЙ РЕЖИМ: проверка каждую 1 минуту
   setInterval(() => {
     runFollowUps().catch((err) => {
       console.error("Follow-up worker error:", err);
     });
-  }, 10 * 60 * 1000);
+  }, 60 * 1000);
 }
 
 module.exports = {
