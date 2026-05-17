@@ -16,6 +16,41 @@ function extractJson(text) {
   }
 }
 
+function looksLikePhone(value = "") {
+  return /^\d{10,15}$/.test(String(value));
+}
+
+function normalizePhone({ parsedPhone, userId, channel }) {
+  if (parsedPhone) return String(parsedPhone);
+
+  if (channel === "whatsapp" && looksLikePhone(userId)) {
+    return String(userId);
+  }
+
+  return "";
+}
+
+function isBookingActuallyReady({ parsed, userId, channel }) {
+  const hasAddress = !!String(parsed.address || "").trim();
+  const hasTime = !!String(parsed.preferred_time || "").trim();
+  const hasServiceOrIntent =
+    !!String(parsed.service || "").trim() ||
+    !!String(parsed.intent || "").trim();
+
+  const hasPhone =
+    !!String(parsed.customer_phone || "").trim() ||
+    (channel === "whatsapp" && looksLikePhone(userId));
+
+  // Для WhatsApp телефон не обязателен как отдельное поле, потому что он есть в userId.
+  // Но адрес + время + услуга обязательны.
+  if (channel === "whatsapp") {
+    return hasAddress && hasTime && hasServiceOrIntent;
+  }
+
+  // Для Telegram/Instagram телефон лучше требовать.
+  return hasAddress && hasTime && hasServiceOrIntent && hasPhone;
+}
+
 async function extractCRM({
   business,
   customerMemory,
@@ -87,17 +122,35 @@ cold
 - warm = интересуется, но ещё не готов.
 - cold = просто спрашивает или сомневается.
 
-Правила booking:
-- booking_ready = true, если клиент реально оставил заявку/записался на замер/согласился на замер и есть минимум:
-  1) адрес или место
-  2) время или дата
-  3) услуга/намерение
-- Если имени нет, customer_name = "".
-- Если клиент написал "этот номер", "осы нөмір", "мой номер", и канал WhatsApp, customer_phone = userId.
-- Если телефона нет, но channel = whatsapp и userId похож на номер телефона, можно использовать userId как customer_phone.
+ЖЁСТКИЕ правила booking:
+- booking_ready = true только если клиент реально оставил заявку/записался на замер/согласился на замер.
+- Для заявки ОБЯЗАТЕЛЬНЫ:
+  1) address
+  2) preferred_time
+  3) service или intent
+- Если address пустой, booking_ready ОБЯЗАТЕЛЬНО false.
+- Если preferred_time пустой, booking_ready ОБЯЗАТЕЛЬНО false.
+- Если нет service/intent, booking_ready ОБЯЗАТЕЛЬНО false.
 - Не создавай booking, если клиент просто спрашивает цену и ещё не согласился на замер.
 - Если заявка готова, lead_stage = "booking_created".
 - Если клиент просит именно менеджера, manager_required = true.
+
+Правила телефона:
+- Для WhatsApp phone НЕ обязателен для booking_ready.
+- Если channel = "whatsapp", customer_phone = userId.
+- Если клиент написал "этот номер", "осы нөмір", "мой номер", customer_phone = userId.
+- Не ставь booking_ready=false только из-за отсутствия телефона в WhatsApp.
+- Для Telegram/Instagram, если телефон не указан, customer_phone = "".
+
+Правила address:
+- Адрес — это улица, район, ЖК, дом, офис, место, например: "Төле би 45", "Абая 10", "БЦ Avenue офис 209".
+- "холл", "кухня", "зал", "спальня", "25 квадрат" НЕ являются адресом.
+- Не записывай комнату как address.
+- Комнату записывай в room_type.
+
+Правила room_type:
+- Если клиент пишет "холл", "зал", "кухня", "спальня", "офис", запиши это в room_type.
+- Не путай room_type с address.
 
 Правила service:
 - service должен соответствовать текущей нише бизнеса.
@@ -106,11 +159,10 @@ cold
 - Не ставь "жалюзи", если последнее сообщение клиента не про жалюзи.
 - Если точная услуга не ясна, используй нишу бизнеса.
 
-Для WhatsApp:
-- phone НЕ обязателен для booking_ready.
-- Если channel = "whatsapp", всегда используй userId как customer_phone.
-- Не ставь booking_ready=false только из-за отсутствия телефона.
-- Для WhatsApp заявка готова, если есть адрес, время и услуга/намерение.
+Правила имени:
+- Если клиент назвал имя, заполни customer_name.
+- Если имени нет, customer_name = "".
+- Отсутствие имени НЕ блокирует booking_ready, если есть address + preferred_time + service/intent.
           `,
         },
         {
@@ -141,7 +193,6 @@ ${aiAnswer || ""}
     });
 
     const raw = completion.choices[0].message.content;
-
     console.log("CRM RAW:", raw);
 
     const parsed = extractJson(raw);
@@ -171,8 +222,24 @@ ${aiAnswer || ""}
       };
     }
 
+    const customerPhone = normalizePhone({
+      parsedPhone: parsed.customer_phone,
+      userId,
+      channel,
+    });
+
+    const bookingReady = isBookingActuallyReady({
+      parsed,
+      userId,
+      channel,
+    });
+
+    const leadStage = bookingReady
+      ? "booking_created"
+      : parsed.lead_stage || "";
+
     return {
-      lead_stage: parsed.lead_stage || "",
+      lead_stage: leadStage,
       intent: parsed.intent || "",
       objection: parsed.objection || "",
       budget: parsed.budget || "",
@@ -182,10 +249,10 @@ ${aiAnswer || ""}
       lead_quality: parsed.lead_quality || "",
       summary: parsed.summary || "",
 
-      booking_ready: !!parsed.booking_ready,
+      booking_ready: bookingReady,
       customer_name: parsed.customer_name || "",
-      customer_phone: parsed.customer_phone || (channel === "whatsapp" ? String(userId) : ""),
-      service: parsed.service || "",
+      customer_phone: customerPhone,
+      service: parsed.service || parsed.intent || business.niche || "",
       address: parsed.address || "",
       preferred_time: parsed.preferred_time || "",
       notes: parsed.notes || "",
