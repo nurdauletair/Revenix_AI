@@ -5,36 +5,25 @@ const path = require("path");
 const supabase = require("../database/supabase");
 
 const { handleMessage } = require("../server");
-
 const { decrypt } = require("../utils/encryption");
-
 const { transcribeAudio } = require("../ai/transcribe");
-
 const { analyzeImage } = require("../ai/vision");
+const { addMessageToBatch } = require("../services/messageBatcher");
 
 // =========================
 // FIND BUSINESS
 // =========================
 
-async function findBusinessByPhoneNumberId(
-  phoneNumberId
-) {
+async function findBusinessByPhoneNumberId(phoneNumberId) {
   const { data, error } = await supabase
     .from("businesses")
     .select("*")
-    .eq(
-      "whatsapp_phone_number_id",
-      String(phoneNumberId)
-    )
+    .eq("whatsapp_phone_number_id", String(phoneNumberId))
     .eq("whatsapp_enabled", true)
     .maybeSingle();
 
   if (error) {
-    console.error(
-      "WhatsApp business find error:",
-      error
-    );
-
+    console.error("WhatsApp business find error:", error);
     throw error;
   }
 
@@ -45,14 +34,8 @@ async function findBusinessByPhoneNumberId(
 // SEND MESSAGE
 // =========================
 
-async function sendWhatsAppMessage({
-  business,
-  to,
-  text,
-}) {
-  const token = decrypt(
-    business.whatsapp_token_encrypted
-  );
+async function sendWhatsAppMessage({ business, to, text }) {
+  const token = decrypt(business.whatsapp_token_encrypted);
 
   const url = `https://graph.facebook.com/v20.0/${business.whatsapp_phone_number_id}/messages`;
 
@@ -84,7 +67,6 @@ async function downloadWhatsAppMedia({
   token,
   extension = "tmp",
 }) {
-  // get media info
   const mediaResponse = await axios.get(
     `https://graph.facebook.com/v20.0/${mediaId}`,
     {
@@ -96,7 +78,6 @@ async function downloadWhatsAppMedia({
 
   const mediaUrl = mediaResponse.data.url;
 
-  // download media
   const mediaFile = await axios.get(mediaUrl, {
     responseType: "arraybuffer",
     headers: {
@@ -104,14 +85,36 @@ async function downloadWhatsAppMedia({
     },
   });
 
-  // save temp file
   const fileName = `wa_${Date.now()}.${extension}`;
-
   const filePath = path.join("/tmp", fileName);
 
   fs.writeFileSync(filePath, mediaFile.data);
 
   return filePath;
+}
+
+// =========================
+// PROCESS AI ANSWER AFTER BATCH
+// =========================
+
+async function processBatchedWhatsAppMessage({
+  business,
+  channel,
+  userId,
+  text,
+}) {
+  const answer = await handleMessage({
+    business,
+    channel,
+    userId,
+    text,
+  });
+
+  await sendWhatsAppMessage({
+    business,
+    to: userId,
+    text: answer,
+  });
 }
 
 // =========================
@@ -129,25 +132,15 @@ async function handleWhatsAppWebhook(body) {
 
       if (!value) continue;
 
-      const phoneNumberId =
-        value.metadata?.phone_number_id;
-
+      const phoneNumberId = value.metadata?.phone_number_id;
       const messages = value.messages || [];
 
-      if (!phoneNumberId || !messages.length)
-        continue;
+      if (!phoneNumberId || !messages.length) continue;
 
-      const business =
-        await findBusinessByPhoneNumberId(
-          phoneNumberId
-        );
+      const business = await findBusinessByPhoneNumberId(phoneNumberId);
 
       if (!business) {
-        console.error(
-          "Business not found:",
-          phoneNumberId
-        );
-
+        console.error("Business not found:", phoneNumberId);
         continue;
       }
 
@@ -155,11 +148,10 @@ async function handleWhatsAppWebhook(body) {
         try {
           const userId = msg.from;
 
-          const token = decrypt(
-            business.whatsapp_token_encrypted
-          );
+          const token = decrypt(business.whatsapp_token_encrypted);
 
           let text = null;
+          let shouldBatch = true;
 
           // =========================
           // TEXT
@@ -182,23 +174,17 @@ async function handleWhatsAppWebhook(body) {
 
             const mediaId = msg.audio?.id;
 
-            const filePath =
-              await downloadWhatsAppMedia({
-                mediaId,
-                token,
-                extension: "ogg",
-              });
+            const filePath = await downloadWhatsAppMedia({
+              mediaId,
+              token,
+              extension: "ogg",
+            });
 
-            text = await transcribeAudio(
-              filePath
-            );
+            text = await transcribeAudio(filePath);
 
             fs.unlinkSync(filePath);
 
-            console.log(
-              "VOICE TRANSCRIPTION:",
-              text
-            );
+            console.log("VOICE TRANSCRIPTION:", text);
           }
 
           // =========================
@@ -213,21 +199,17 @@ async function handleWhatsAppWebhook(body) {
             });
 
             const mediaId = msg.image?.id;
+            const caption = msg.image?.caption || "";
 
-            const caption =
-              msg.image?.caption || "";
+            const filePath = await downloadWhatsAppMedia({
+              mediaId,
+              token,
+              extension: "jpg",
+            });
 
-            const filePath =
-              await downloadWhatsAppMedia({
-                mediaId,
-                token,
-                extension: "jpg",
-              });
-
-            const imageAnalysis =
-              await analyzeImage(
-                filePath,
-                `
+            const imageAnalysis = await analyzeImage(
+              filePath,
+              `
 Клиент отправил изображение.
 
 Подпись клиента:
@@ -236,7 +218,7 @@ ${caption}
 Опиши изображение и помоги понять,
 что хочет клиент.
 `
-              );
+            );
 
             fs.unlinkSync(filePath);
 
@@ -249,6 +231,9 @@ ${imageAnalysis}
 Подпись:
 ${caption}
 `;
+
+            // Фото лучше не держать слишком долго, но 4 секунды можно оставить.
+            shouldBatch = true;
           }
 
           // =========================
@@ -256,11 +241,8 @@ ${caption}
           // =========================
 
           if (msg.type === "location") {
-            const latitude =
-              msg.location?.latitude;
-
-            const longitude =
-              msg.location?.longitude;
+            const latitude = msg.location?.latitude;
+            const longitude = msg.location?.longitude;
 
             text = `
 Клиент отправил геолокацию.
@@ -268,6 +250,8 @@ ${caption}
 Latitude: ${latitude}
 Longitude: ${longitude}
 `;
+
+            shouldBatch = true;
           }
 
           // =========================
@@ -279,6 +263,8 @@ Longitude: ${longitude}
 Клиент отправил документ:
 ${msg.document?.filename || "file"}
 `;
+
+            shouldBatch = true;
           }
 
           // =========================
@@ -297,35 +283,40 @@ ${msg.document?.filename || "file"}
           }
 
           // =========================
-          // AI
+          // SMART BATCHING
           // =========================
 
-          const answer = await handleMessage({
+          if (shouldBatch) {
+            addMessageToBatch({
+              business,
+              channel: "whatsapp",
+              userId,
+              text,
+              delayMs: 4000,
+              onReady: processBatchedWhatsAppMessage,
+            });
+
+            continue;
+          }
+
+          // fallback, если batching отключим для какого-то типа
+          await processBatchedWhatsAppMessage({
             business,
             channel: "whatsapp",
             userId,
             text,
           });
-
-          // send answer
-          await sendWhatsAppMessage({
-            business,
-            to: userId,
-            text: answer,
-          });
         } catch (err) {
           console.error(
             "WhatsApp processing error:",
-            err.response?.data ||
-              err.message
+            err.response?.data || err.message
           );
 
           try {
             await sendWhatsAppMessage({
               business,
               to: msg.from,
-              text:
-                "Произошла ошибка. Менеджер скоро свяжется с вами.",
+              text: "Произошла ошибка. Менеджер скоро свяжется с вами.",
             });
           } catch (_) {}
         }
