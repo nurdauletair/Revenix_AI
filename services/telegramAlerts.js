@@ -48,6 +48,25 @@ async function getBusinessAdmins(businessId) {
   return admins || [];
 }
 
+function getAiButtons(userId) {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: "✅ Вернуть AI",
+          callback_data: `ai_on:${userId}`,
+        },
+      ],
+      [
+        {
+          text: "⛔ Оставить менеджеру",
+          callback_data: `ai_off:${userId}`,
+        },
+      ],
+    ],
+  };
+}
+
 async function notifyAdminsAboutBooking({
   business,
   customer,
@@ -76,7 +95,7 @@ async function notifyAdminsAboutBooking({
 
 🏠 <b>Комната:</b> ${escapeHtml(booking.room_type || "не указано")}
 📐 <b>Площадь:</b> ${escapeHtml(booking.estimated_area || "не указано")}
-🔥 <b>Лид:</b> ${escapeHtml(booking.lead_quality || "warm")}
+🔥 <b>Лид:</b> ${escapeHtml(booking.lead_quality || "hot")}
 
 📝 <b>Заметки:</b>
 ${escapeHtml(booking.notes || "нет")}
@@ -86,30 +105,111 @@ ${escapeHtml(booking.notes || "нет")}
 ⛔ Оставить менеджеру: /ai_off ${escapeHtml(userId)}
 `;
 
-  const replyMarkup = {
-    inline_keyboard: [
-      [
-        {
-          text: "✅ Вернуть AI",
-          callback_data: `ai_on:${userId}`,
-        },
-      ],
-      [
-        {
-          text: "⛔ Оставить менеджеру",
-          callback_data: `ai_off:${userId}`,
-        },
-      ],
-    ],
-  };
+  for (const admin of admins) {
+    if (!admin.telegram_user_id) continue;
+
+    try {
+      await sendTelegramMessage(
+        admin.telegram_user_id,
+        message,
+        getAiButtons(userId)
+      );
+    } catch (err) {
+      console.error(
+        "Telegram booking alert error:",
+        err.response?.data || err.message
+      );
+    }
+  }
+}
+
+async function notifyAdminsAboutBookingUpdate({
+  business,
+  customer,
+  oldBooking,
+  newBooking,
+  channel,
+  userId,
+}) {
+  const admins = await getBusinessAdmins(business.id);
+
+  if (!admins.length) {
+    console.error("No admins found for business:", business.id);
+    return;
+  }
+
+  const changes = [];
+
+  if (oldBooking.preferred_time !== newBooking.preferred_time) {
+    changes.push(
+      `🕒 <b>Время:</b> ${escapeHtml(oldBooking.preferred_time || "не указано")} → ${escapeHtml(newBooking.preferred_time || "не указано")}`
+    );
+  }
+
+  if (oldBooking.address !== newBooking.address) {
+    changes.push(
+      `📍 <b>Адрес:</b> ${escapeHtml(oldBooking.address || "не указано")} → ${escapeHtml(newBooking.address || "не указано")}`
+    );
+  }
+
+  if (oldBooking.room_type !== newBooking.room_type) {
+    changes.push(
+      `🏠 <b>Комната:</b> ${escapeHtml(oldBooking.room_type || "не указано")} → ${escapeHtml(newBooking.room_type || "не указано")}`
+    );
+  }
+
+  if (oldBooking.estimated_area !== newBooking.estimated_area) {
+    changes.push(
+      `📐 <b>Площадь:</b> ${escapeHtml(oldBooking.estimated_area || "не указано")} → ${escapeHtml(newBooking.estimated_area || "не указано")}`
+    );
+  }
+
+  if (oldBooking.customer_name !== newBooking.customer_name) {
+    changes.push(
+      `👤 <b>Имя:</b> ${escapeHtml(oldBooking.customer_name || "не указано")} → ${escapeHtml(newBooking.customer_name || "не указано")}`
+    );
+  }
+
+  const changeText = changes.length
+    ? changes.join("\n")
+    : "Данные заявки обновлены.";
+
+  const message = `
+🔄 <b>Заявка на замер обновлена</b>
+
+🏢 <b>Бизнес:</b> ${escapeHtml(business.name || "не указано")}
+📲 <b>Канал:</b> ${escapeHtml(channel || "не указано")}
+👤 <b>Клиент:</b> ${escapeHtml(newBooking.customer_name || customer?.name || "не указано")}
+📱 <b>Телефон:</b> ${escapeHtml(newBooking.customer_phone || userId || "не указано")}
+
+${changeText}
+
+📌 <b>Текущая заявка:</b>
+💬 <b>Услуга:</b> ${escapeHtml(newBooking.service || "не указано")}
+📍 <b>Адрес:</b> ${escapeHtml(newBooking.address || "не указано")}
+🕒 <b>Время:</b> ${escapeHtml(newBooking.preferred_time || "не указано")}
+🏠 <b>Комната:</b> ${escapeHtml(newBooking.room_type || "не указано")}
+📐 <b>Площадь:</b> ${escapeHtml(newBooking.estimated_area || "не указано")}
+
+Команды:
+✅ Вернуть AI: /ai_on ${escapeHtml(userId)}
+⛔ Оставить менеджеру: /ai_off ${escapeHtml(userId)}
+`;
 
   for (const admin of admins) {
     if (!admin.telegram_user_id) continue;
 
     try {
-      await sendTelegramMessage(admin.telegram_user_id, message, replyMarkup);
+      await sendTelegramMessage(
+        admin.telegram_user_id,
+        message,
+        getAiButtons(userId)
+      );
     } catch (err) {
-      console.error("Telegram booking alert error:", err.response?.data || err.message);
+      console.error(
+        "Telegram booking update alert error:",
+        err.response?.data || err.message
+      );
     }
   }
 }
@@ -153,30 +253,20 @@ ${escapeHtml(reason || "нужен менеджер")}
 ⛔ Оставить менеджеру: /ai_off ${escapeHtml(userId)}
 `;
 
-  const replyMarkup = {
-    inline_keyboard: [
-      [
-        {
-          text: "✅ Вернуть AI",
-          callback_data: `ai_on:${userId}`,
-        },
-      ],
-      [
-        {
-          text: "⛔ Оставить менеджеру",
-          callback_data: `ai_off:${userId}`,
-        },
-      ],
-    ],
-  };
-
   for (const admin of admins) {
     if (!admin.telegram_user_id) continue;
 
     try {
-      await sendTelegramMessage(admin.telegram_user_id, message, replyMarkup);
+      await sendTelegramMessage(
+        admin.telegram_user_id,
+        message,
+        getAiButtons(userId)
+      );
     } catch (err) {
-      console.error("Telegram handoff alert error:", err.response?.data || err.message);
+      console.error(
+        "Telegram handoff alert error:",
+        err.response?.data || err.message
+      );
     }
   }
 }
@@ -185,4 +275,5 @@ module.exports = {
   sendTelegramMessage,
   notifyAdminsAboutHandoff,
   notifyAdminsAboutBooking,
+  notifyAdminsAboutBookingUpdate,
 };

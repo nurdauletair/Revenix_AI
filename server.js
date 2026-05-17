@@ -6,11 +6,17 @@ const supabase = require("./database/supabase");
 
 const { buildPrompt } = require("./ai/prompt");
 const { extractCRM } = require("./ai/extractCRM");
-const { createBooking } = require("./database/bookings");
+
+const {
+  createBooking,
+  findActiveBooking,
+  updateBooking,
+} = require("./database/bookings");
 
 const {
   notifyAdminsAboutHandoff,
   notifyAdminsAboutBooking,
+  notifyAdminsAboutBookingUpdate,
 } = require("./services/telegramAlerts");
 
 const {
@@ -82,6 +88,20 @@ async function askAI(systemPrompt, history, text) {
 }
 
 // =========================
+// BOOKING CHANGE CHECK
+// =========================
+
+function hasImportantBookingChanges(oldBooking, newBooking) {
+  return (
+    oldBooking.preferred_time !== newBooking.preferred_time ||
+    oldBooking.address !== newBooking.address ||
+    oldBooking.room_type !== newBooking.room_type ||
+    oldBooking.estimated_area !== newBooking.estimated_area ||
+    oldBooking.customer_name !== newBooking.customer_name
+  );
+}
+
+// =========================
 // BACKGROUND CRM PROCESSING
 // =========================
 
@@ -118,7 +138,15 @@ async function processCRMInBackground({
       booking_ready: crm.booking_ready,
     });
 
-    if (crm.booking_ready) {
+    if (!crm.booking_ready) return;
+
+    const activeBooking = await findActiveBooking({
+      businessId: business.id,
+      userId,
+      channel,
+    });
+
+    if (!activeBooking) {
       const booking = await createBooking({
         business,
         customer,
@@ -163,10 +191,56 @@ async function processCRMInBackground({
         business: business.name,
         userId,
         channel,
-        service: crm.service,
-        preferredTime: crm.preferred_time,
+        service: booking.service,
+        preferredTime: booking.preferred_time,
       });
+
+      return;
     }
+
+    const newBooking = await updateBooking({
+      bookingId: activeBooking.id,
+
+      customerName: crm.customer_name,
+      customerPhone: crm.customer_phone,
+      service: crm.service || crm.intent || business.niche,
+      address: crm.address,
+      preferredTime: crm.preferred_time,
+      notes: crm.notes,
+
+      roomType: crm.room_type || null,
+      estimatedArea: crm.estimated_area || null,
+      urgency: crm.urgency || null,
+      leadQuality: crm.lead_quality || "hot",
+      intent: crm.intent || crm.service || business.niche || null,
+      managerRequired: crm.manager_required || false,
+    });
+
+    if (hasImportantBookingChanges(activeBooking, newBooking)) {
+      await notifyAdminsAboutBookingUpdate({
+        business,
+        customer,
+        oldBooking: activeBooking,
+        newBooking,
+        channel,
+        userId,
+      });
+
+      console.log("🔄 Booking updated from CRM:", {
+        business: business.name,
+        userId,
+        channel,
+        oldTime: activeBooking.preferred_time,
+        newTime: newBooking.preferred_time,
+      });
+
+      return;
+    }
+
+    console.log("⏭️ Booking exists, no important changes:", {
+      userId,
+      channel,
+    });
   } catch (err) {
     console.error("Background CRM processing error:", err);
   }
