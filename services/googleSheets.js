@@ -3,6 +3,14 @@ require("dotenv").config();
 const { google } = require("googleapis");
 
 function getGoogleAuth() {
+  if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
+    throw new Error("GOOGLE_SERVICE_ACCOUNT_EMAIL is missing");
+  }
+
+  if (!process.env.GOOGLE_PRIVATE_KEY) {
+    throw new Error("GOOGLE_PRIVATE_KEY is missing");
+  }
+
   return new google.auth.JWT({
     email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
 

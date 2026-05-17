@@ -5,8 +5,7 @@ const OpenAI = require("openai");
 const supabase = require("./database/supabase");
 
 const { buildPrompt } = require("./ai/prompt");
-const { extractBooking } = require("./ai/extractBooking");
-const { extractLeadInsights } = require("./ai/extractLeadInsights");
+const { extractCRM } = require("./ai/extractCRM");
 const { createBooking } = require("./database/bookings");
 const { detectHandoff } = require("./ai/detectHandoff");
 const { notifyAdminsAboutHandoff } = require("./services/telegramAlerts");
@@ -30,20 +29,26 @@ const openai = new OpenAI({
 // =========================
 
 function isDirectHandoffRequest(text = "") {
-  const lower = text.toLowerCase();
+  const lower = String(text).toLowerCase();
 
   const keywords = [
     "менеджер",
     "оператор",
     "человек",
     "живой",
+    "живой человек",
     "позвоните",
     "перезвоните",
     "свяжитесь",
+    "свяжитесь со мной",
     "хочу поговорить",
+    "можно с человеком",
     "адам",
     "қоңырау",
+    "қоңырау шалыңыз",
+    "хабарласыңыз",
     "менеджермен",
+    "оператормен",
   ];
 
   return keywords.some((word) => lower.includes(word));
@@ -56,7 +61,7 @@ function isDirectHandoffRequest(text = "") {
 async function askAI(systemPrompt, history, text) {
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
-    temperature: 0.7,
+    temperature: 0.4,
     messages: [
       {
         role: "system",
@@ -71,6 +76,86 @@ async function askAI(systemPrompt, history, text) {
   });
 
   return completion.choices[0].message.content;
+}
+
+// =========================
+// BACKGROUND CRM PROCESSING
+// =========================
+
+async function processCRMInBackground({
+  business,
+  customer,
+  customerMemory,
+  userText,
+  aiAnswer,
+  userId,
+  channel,
+}) {
+  try {
+    const crm = await extractCRM({
+      business,
+      customerMemory,
+      userText,
+      aiAnswer,
+      userId,
+      channel,
+    });
+
+    if (!crm) return;
+
+    await updateCustomerInsights(customer.id, crm);
+
+    console.log("🧠 CRM updated:", {
+      userId,
+      lead_stage: crm.lead_stage,
+      intent: crm.intent,
+      lead_quality: crm.lead_quality,
+      booking_ready: crm.booking_ready,
+    });
+
+    if (crm.booking_ready) {
+      await createBooking({
+        business,
+        customer,
+
+        customerName: crm.customer_name,
+        customerPhone: crm.customer_phone,
+        service: crm.service || crm.intent || business.niche,
+        address: crm.address,
+        preferredTime: crm.preferred_time,
+        notes: crm.notes,
+
+        userId,
+        channel,
+
+        roomType: crm.room_type || null,
+        estimatedArea: crm.estimated_area || null,
+        urgency: crm.urgency || null,
+        leadQuality: crm.lead_quality || "warm",
+        intent: crm.intent || crm.service || business.niche || null,
+        managerRequired: crm.manager_required || false,
+      });
+
+      await supabase
+        .from("customers")
+        .update({
+          status: "booking_created",
+          lead_stage: "booking_created",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", customer.id);
+
+      console.log("✅ Booking created from CRM:", {
+        business: business.name,
+        userId,
+        channel,
+        service: crm.service,
+        preferredTime: crm.preferred_time,
+      });
+    }
+  } catch (err) {
+    console.error("Background CRM processing error:", err);
+  }
 }
 
 // =========================
@@ -116,7 +201,7 @@ async function handleMessage({ business, channel, userId, text }) {
       return "Ваш запрос уже передан менеджеру. Он скоро свяжется с вами 👌";
     }
 
-    // 5. direct handoff by keywords — fast path, no need to wait AI
+    // 5. direct handoff by keywords — fast path, no OpenAI
     if (isDirectHandoffRequest(text)) {
       await supabase
         .from("customers")
@@ -194,136 +279,20 @@ async function handleMessage({ business, channel, userId, text }) {
       channel
     );
 
-    // 12. extract lead insights and update smart CRM
-    let insights = null;
+    // 12. process CRM + booking in background
+    processCRMInBackground({
+      business,
+      customer,
+      customerMemory,
+      userText: text,
+      aiAnswer: answer,
+      userId,
+      channel,
+    }).catch((err) => {
+      console.error("CRM background error:", err);
+    });
 
-    try {
-      insights = await extractLeadInsights({
-        business,
-        customerMemory,
-        userText: text,
-        aiAnswer: answer,
-      });
-
-      if (insights) {
-        await updateCustomerInsights(customer.id, insights);
-
-        console.log("🧠 Lead insights updated:", {
-          userId,
-          lead_stage: insights.lead_stage,
-          intent: insights.intent,
-          lead_quality: insights.lead_quality,
-          room_type: insights.room_type,
-          estimated_area: insights.estimated_area,
-        });
-      }
-    } catch (insightsError) {
-      console.error("Lead insights error:", insightsError);
-    }
-
-    let bookingCreated = false;
-
-    // 13. extract booking and save to Supabase + Google Sheets
-    try {
-      const bookingData = await extractBooking({
-        business,
-        customerMemory,
-        userText: text,
-        aiAnswer: answer,
-      });
-
-      if (bookingData?.booking_ready) {
-        await createBooking({
-          business,
-          customer,
-          customerName: bookingData.customer_name,
-          customerPhone: bookingData.customer_phone,
-          service: bookingData.service,
-          address: bookingData.address,
-          preferredTime: bookingData.preferred_time,
-          notes: bookingData.notes,
-          userId,
-          channel,
-
-          // Smart CRM fields
-          roomType: insights?.room_type || null,
-          estimatedArea: insights?.estimated_area || null,
-          urgency: insights?.urgency || null,
-          leadQuality: insights?.lead_quality || "warm",
-          intent: insights?.intent || bookingData.service || null,
-          managerRequired: false,
-        });
-
-        bookingCreated = true;
-
-        await supabase
-          .from("customers")
-          .update({
-            status: "booking_created",
-            lead_stage: "booking_created",
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", customer.id);
-
-        console.log("✅ Booking created:", {
-          business: business.name,
-          userId,
-          channel,
-          service: bookingData.service,
-          preferredTime: bookingData.preferred_time,
-        });
-      }
-    } catch (bookingError) {
-      console.error("Booking extraction/save error:", bookingError);
-    }
-
-    if (bookingCreated) {
-      return answer;
-    }
-
-    // 14. detect human handoff with AI fallback
-    try {
-      const handoff = await detectHandoff({
-        userText: text,
-        aiAnswer: answer,
-      });
-
-      console.log("HANDOFF RESULT:", handoff);
-
-      if (handoff?.handoff_required) {
-        await supabase
-          .from("customers")
-          .update({
-            human_required: true,
-            human_requested_at: new Date().toISOString(),
-            human_reason: handoff.reason || "Нужен менеджер",
-            status: "human_required",
-            lead_stage: "human_required",
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", customer.id);
-
-        await notifyAdminsAboutHandoff({
-          business,
-          customer,
-          channel,
-          userId,
-          userText: text,
-          aiAnswer: answer,
-          reason: handoff.reason,
-        });
-
-        console.log("🚨 Human handoff requested:", {
-          business: business.name,
-          userId,
-          channel,
-          reason: handoff.reason,
-        });
-      }
-    } catch (handoffError) {
-      console.error("Handoff detection error:", handoffError);
-    }
-
+    // 13. return answer immediately
     return answer;
   } catch (err) {
     console.error("AI ERROR:", err);

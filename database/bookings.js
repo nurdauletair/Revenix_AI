@@ -33,7 +33,7 @@ async function createBooking({
     customer_name: customerName || customer?.name || null,
     customer_phone: customerPhone || customer?.phone || String(userId),
 
-    service: service || customer?.need || intent || null,
+    service: service || intent || business.niche || null,
     address: address || customer?.address || null,
     preferred_time: preferredTime || null,
 
@@ -59,15 +59,14 @@ async function createBooking({
     throw error;
   }
 
+  // Google Sheets пишем в фоне, чтобы не тормозить основной процесс
   if (business.google_sheet_id) {
-    try {
-      await appendBookingToSheet({
-        spreadsheetId: business.google_sheet_id,
-        booking: data,
-      });
-    } catch (err) {
+    appendBookingToSheet({
+      spreadsheetId: business.google_sheet_id,
+      booking: data,
+    }).catch((err) => {
       console.error("Google Sheets append error:", err.message);
-    }
+    });
   }
 
   return data;
