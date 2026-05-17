@@ -269,7 +269,7 @@ ${aiAnswer || ""}
       room_type: parsed.room_type || "",
       estimated_area: parsed.estimated_area || "",
       urgency: parsed.urgency || "",
-      lead_quality: parsed.lead_quality || "",
+      lead_quality: bookingReady ? "hot" : parsed.lead_quality || "warm",
       summary: parsed.summary || "",
 
       booking_ready: bookingReady,
