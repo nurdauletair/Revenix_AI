@@ -21,15 +21,12 @@ ${customer.need || ""}
     text.includes("ү") ||
     text.includes("ұ") ||
     text.includes("ө") ||
-    text.includes("і") ||
-    text.includes("потолок")
+    text.includes("і")
   );
 }
 
 function getFollowUp1Text(customer) {
-  const isKazakh = isKazakhCustomer(customer);
-
-  if (isKazakh) {
+  if (isKazakhCustomer(customer)) {
     return `Сәлеметсіз бе 😊
 
 Сіз натяжной потолок бойынша сұраған едіңіз.
@@ -51,9 +48,7 @@ function getFollowUp1Text(customer) {
 }
 
 function getFollowUp2Text(customer) {
-  const isKazakh = isKazakhCustomer(customer);
-
-  if (isKazakh) {
+  if (isKazakhCustomer(customer)) {
     return `Қайырлы күн 😊
 
 Натяжной потолок бойынша нақты бағаны тегін замерден кейін шығарып бере аламыз.
@@ -85,29 +80,49 @@ async function getBusinessById(businessId) {
   return data;
 }
 
+function isBlockedStatus(status) {
+  return ["booking_created", "human_required", "closed", "lost"].includes(
+    status || ""
+  );
+}
+
 async function sendFollowUp1() {
   const { data: customers, error } = await supabase
     .from("customers")
     .select("*")
     .eq("channel", "whatsapp")
-    .eq("followup_blocked", false)
     .is("followup_1_sent_at", null)
     .eq("human_required", false)
-    .not("status", "in", '("booking_created","human_required","closed","lost")')
     .lte("last_message_at", hoursAgo(0.01))
     .gte("last_message_at", hoursAgo(23))
-    .limit(20);
+    .limit(50);
 
   if (error) {
     console.error("Follow-up 1 customers error:", error);
     return;
   }
 
-  for (const customer of customers || []) {
+  const candidates = (customers || []).filter((customer) => {
+    if (customer.followup_blocked === true) return false;
+    if (isBlockedStatus(customer.status)) return false;
+    return true;
+  });
+
+  console.log("🔎 Follow-up 1 candidates:", candidates.length);
+
+  for (const customer of candidates) {
     try {
       const business = await getBusinessById(customer.business_id);
 
-      if (!business || !business.whatsapp_enabled) continue;
+      if (!business) {
+        console.log("⏭️ Follow-up skipped: business not found", customer.business_id);
+        continue;
+      }
+
+      if (!business.whatsapp_enabled) {
+        console.log("⏭️ Follow-up skipped: whatsapp disabled", business.name);
+        continue;
+      }
 
       await sendWhatsAppMessage({
         business,
@@ -140,26 +155,40 @@ async function sendFollowUp2() {
   const { data: customers, error } = await supabase
     .from("customers")
     .select("*")
-    .eq("channel", "whatsapp")
-    .eq("followup_blocked", false)
     .not("followup_1_sent_at", "is", null)
     .is("followup_2_sent_at", null)
+    .eq("channel", "whatsapp")
     .eq("human_required", false)
-    .not("status", "in", '("booking_created","human_required","closed","lost")')
     .lte("last_message_at", hoursAgo(0.02))
     .gte("last_message_at", hoursAgo(23))
-    .limit(20);
+    .limit(50);
 
   if (error) {
     console.error("Follow-up 2 customers error:", error);
     return;
   }
 
-  for (const customer of customers || []) {
+  const candidates = (customers || []).filter((customer) => {
+    if (customer.followup_blocked === true) return false;
+    if (isBlockedStatus(customer.status)) return false;
+    return true;
+  });
+
+  console.log("🔎 Follow-up 2 candidates:", candidates.length);
+
+  for (const customer of candidates) {
     try {
       const business = await getBusinessById(customer.business_id);
 
-      if (!business || !business.whatsapp_enabled) continue;
+      if (!business) {
+        console.log("⏭️ Follow-up 2 skipped: business not found", customer.business_id);
+        continue;
+      }
+
+      if (!business.whatsapp_enabled) {
+        console.log("⏭️ Follow-up 2 skipped: whatsapp disabled", business.name);
+        continue;
+      }
 
       await sendWhatsAppMessage({
         business,
@@ -189,6 +218,7 @@ async function sendFollowUp2() {
 }
 
 async function runFollowUps() {
+  console.log("🔁 Running follow-up check...");
   await sendFollowUp1();
   await sendFollowUp2();
 }
@@ -196,7 +226,12 @@ async function runFollowUps() {
 function startFollowUpWorker() {
   console.log("✅ Follow-up worker started");
 
-  // ТЕСТОВЫЙ РЕЖИМ: проверка каждую 1 минуту
+  // Запускаем сразу, не ждём 1 минуту
+  runFollowUps().catch((err) => {
+    console.error("Follow-up initial run error:", err);
+  });
+
+  // Тестовый режим: проверка каждую минуту
   setInterval(() => {
     runFollowUps().catch((err) => {
       console.error("Follow-up worker error:", err);
