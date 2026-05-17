@@ -13,22 +13,18 @@ function getGoogleAuth() {
 
   return new google.auth.JWT({
     email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-
-    key: process.env.GOOGLE_PRIVATE_KEY.replace(
-      /\\n/g,
-      "\n"
-    ),
-
-    scopes: [
-      "https://www.googleapis.com/auth/spreadsheets",
-    ],
+    key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
 }
 
-async function appendBookingToSheet({
-  spreadsheetId,
-  booking,
-}) {
+function getAlmatyDateTime() {
+  return new Date().toLocaleString("ru-RU", {
+    timeZone: "Asia/Almaty",
+  });
+}
+
+async function appendRowToSheet({ spreadsheetId, values }) {
   const auth = getGoogleAuth();
 
   const sheets = google.sheets({
@@ -36,11 +32,21 @@ async function appendBookingToSheet({
     auth,
   });
 
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: "Sheet1!A:P",
+    valueInputOption: "USER_ENTERED",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: {
+      values,
+    },
+  });
+}
+
+async function appendBookingToSheet({ spreadsheetId, booking }) {
   const values = [
     [
-      new Date().toLocaleString("ru-RU", {
-        timeZone: "Asia/Almaty",
-      }),
+      getAlmatyDateTime(),
 
       booking.channel || "",
 
@@ -54,7 +60,7 @@ async function appendBookingToSheet({
 
       booking.preferred_time || "",
 
-      booking.status || "",
+      booking.status || "new",
 
       booking.notes || "",
 
@@ -74,21 +80,113 @@ async function appendBookingToSheet({
     ],
   ];
 
-  await sheets.spreadsheets.values.append({
+  await appendRowToSheet({
     spreadsheetId,
+    values,
+  });
+}
 
-    range: "Sheet1!A:P",
+function buildUpdateNote({ oldBooking, newBooking }) {
+  const changes = [];
 
-    valueInputOption: "USER_ENTERED",
+  if (oldBooking?.preferred_time !== newBooking?.preferred_time) {
+    changes.push(
+      `Время: ${oldBooking?.preferred_time || "не указано"} → ${
+        newBooking?.preferred_time || "не указано"
+      }`
+    );
+  }
 
-    insertDataOption: "INSERT_ROWS",
+  if (oldBooking?.address !== newBooking?.address) {
+    changes.push(
+      `Адрес: ${oldBooking?.address || "не указано"} → ${
+        newBooking?.address || "не указано"
+      }`
+    );
+  }
 
-    requestBody: {
-      values,
-    },
+  if (oldBooking?.room_type !== newBooking?.room_type) {
+    changes.push(
+      `Комната: ${oldBooking?.room_type || "не указано"} → ${
+        newBooking?.room_type || "не указано"
+      }`
+    );
+  }
+
+  if (oldBooking?.estimated_area !== newBooking?.estimated_area) {
+    changes.push(
+      `Площадь: ${oldBooking?.estimated_area || "не указано"} → ${
+        newBooking?.estimated_area || "не указано"
+      }`
+    );
+  }
+
+  if (oldBooking?.customer_name !== newBooking?.customer_name) {
+    changes.push(
+      `Имя: ${oldBooking?.customer_name || "не указано"} → ${
+        newBooking?.customer_name || "не указано"
+      }`
+    );
+  }
+
+  if (!changes.length) {
+    return "Заявка обновлена";
+  }
+
+  return `Заявка обновлена: ${changes.join("; ")}`;
+}
+
+async function appendBookingUpdateToSheet({
+  spreadsheetId,
+  oldBooking,
+  newBooking,
+}) {
+  const values = [
+    [
+      getAlmatyDateTime(),
+
+      newBooking.channel || "",
+
+      newBooking.customer_name || "",
+
+      newBooking.customer_phone || "",
+
+      newBooking.service || "",
+
+      newBooking.address || "",
+
+      newBooking.preferred_time || "",
+
+      "updated",
+
+      buildUpdateNote({
+        oldBooking,
+        newBooking,
+      }),
+
+      newBooking.user_id || "",
+
+      newBooking.lead_quality || "",
+
+      newBooking.room_type || "",
+
+      newBooking.estimated_area || "",
+
+      newBooking.urgency || "",
+
+      newBooking.intent || "",
+
+      newBooking.manager_required ? "Да" : "Нет",
+    ],
+  ];
+
+  await appendRowToSheet({
+    spreadsheetId,
+    values,
   });
 }
 
 module.exports = {
   appendBookingToSheet,
+  appendBookingUpdateToSheet,
 };

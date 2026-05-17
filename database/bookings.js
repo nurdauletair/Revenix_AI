@@ -1,5 +1,19 @@
 const supabase = require("./supabase");
-const { appendBookingToSheet } = require("../services/googleSheets");
+
+const {
+  appendBookingToSheet,
+  appendBookingUpdateToSheet,
+} = require("../services/googleSheets");
+
+function hasImportantBookingChanges(oldBooking, newBooking) {
+  return (
+    oldBooking?.preferred_time !== newBooking?.preferred_time ||
+    oldBooking?.address !== newBooking?.address ||
+    oldBooking?.room_type !== newBooking?.room_type ||
+    oldBooking?.estimated_area !== newBooking?.estimated_area ||
+    oldBooking?.customer_name !== newBooking?.customer_name
+  );
+}
 
 async function findActiveBooking({ businessId, userId, channel }) {
   const { data, error } = await supabase
@@ -90,6 +104,21 @@ async function createBooking({
   return data;
 }
 
+async function getBusinessGoogleSheetId(businessId) {
+  const { data, error } = await supabase
+    .from("businesses")
+    .select("google_sheet_id")
+    .eq("id", businessId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("Business google_sheet_id find error:", error);
+    return null;
+  }
+
+  return data?.google_sheet_id || null;
+}
+
 async function updateBooking({
   bookingId,
 
@@ -107,6 +136,17 @@ async function updateBooking({
   intent,
   managerRequired,
 }) {
+  const { data: oldBooking, error: oldError } = await supabase
+    .from("bookings")
+    .select("*")
+    .eq("id", bookingId)
+    .single();
+
+  if (oldError) {
+    console.error("Old booking find error:", oldError);
+    throw oldError;
+  }
+
   const payload = {
     updated_at: new Date().toISOString(),
   };
@@ -128,7 +168,7 @@ async function updateBooking({
     payload.manager_required = managerRequired;
   }
 
-  const { data, error } = await supabase
+  const { data: newBooking, error } = await supabase
     .from("bookings")
     .update(payload)
     .eq("id", bookingId)
@@ -140,7 +180,26 @@ async function updateBooking({
     throw error;
   }
 
-  return data;
+  const importantChanged = hasImportantBookingChanges(oldBooking, newBooking);
+
+  if (importantChanged) {
+    const googleSheetId = await getBusinessGoogleSheetId(newBooking.business_id);
+
+    if (googleSheetId) {
+      appendBookingUpdateToSheet({
+        spreadsheetId: googleSheetId,
+        oldBooking,
+        newBooking,
+      }).catch((err) => {
+        console.error(
+          "Google Sheets booking update append error:",
+          err.message
+        );
+      });
+    }
+  }
+
+  return newBooking;
 }
 
 module.exports = {
