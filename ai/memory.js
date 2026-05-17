@@ -24,12 +24,15 @@ async function getOrCreateCustomer(businessId, chatId, channel = "telegram") {
     return existingCustomer;
   }
 
+  const phoneFromUserId = channel === "whatsapp" ? userId : null;
+
   const { data: newCustomer, error: insertError } = await supabase
     .from("customers")
     .insert({
       business_id: businessId,
       channel,
       user_id: userId,
+      phone: phoneFromUserId,
       status: "new",
       lead_stage: "new",
       lead_quality: "warm",

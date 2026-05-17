@@ -105,6 +105,12 @@ cold
 - Не используй старую услугу из памяти, если последнее сообщение клиента про другую услугу.
 - Не ставь "жалюзи", если последнее сообщение клиента не про жалюзи.
 - Если точная услуга не ясна, используй нишу бизнеса.
+
+Для WhatsApp:
+- phone НЕ обязателен для booking_ready.
+- Если channel = "whatsapp", всегда используй userId как customer_phone.
+- Не ставь booking_ready=false только из-за отсутствия телефона.
+- Для WhatsApp заявка готова, если есть адрес, время и услуга/намерение.
           `,
         },
         {
@@ -178,7 +184,7 @@ ${aiAnswer || ""}
 
       booking_ready: !!parsed.booking_ready,
       customer_name: parsed.customer_name || "",
-      customer_phone: parsed.customer_phone || "",
+      customer_phone: parsed.customer_phone || (channel === "whatsapp" ? String(userId) : ""),
       service: parsed.service || "",
       address: parsed.address || "",
       preferred_time: parsed.preferred_time || "",
