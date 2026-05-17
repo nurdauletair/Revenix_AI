@@ -54,6 +54,7 @@ function isBookingActuallyReady({ parsed, userId, channel }) {
 async function extractCRM({
   business,
   customerMemory,
+  conversationText,
   userText,
   aiAnswer,
   userId,
@@ -163,6 +164,14 @@ cold
 - Если клиент назвал имя, заполни customer_name.
 - Если имени нет, customer_name = "".
 - Отсутствие имени НЕ блокирует booking_ready, если есть address + preferred_time + service/intent.
+
+Правила использования истории:
+- Анализируй не только последнее сообщение, но и весь последний диалог.
+- Если площадь/комната были указаны раньше в диалоге, используй их.
+- Если клиент сначала написал "залға 28 квадрат", а потом написал имя и адрес, заявка должна содержать:
+  room_type = "зал"
+  estimated_area = "28 м²"
+- Не теряй данные, которые клиент уже сообщил раньше.
           `,
         },
         {
@@ -181,6 +190,10 @@ ${userId || ""}
 
 Память клиента:
 ${customerMemory || ""}
+
+Последний диалог:
+${conversationText || ""}
+
 
 Последнее сообщение клиента:
 ${userText || ""}

@@ -86,6 +86,7 @@ async function processCRMInBackground({
   business,
   customer,
   customerMemory,
+  conversationText,
   userText,
   aiAnswer,
   userId,
@@ -95,6 +96,7 @@ async function processCRMInBackground({
     const crm = await extractCRM({
       business,
       customerMemory,
+      conversationText,
       userText,
       aiAnswer,
       userId,
@@ -280,6 +282,10 @@ async function handleMessage({ business, channel, userId, text }) {
     );
 
     // 12. process CRM + booking in background
+    const conversationText = conversationMemory
+    .map((m) => `${m.role}: ${m.content}`)
+    .join("\n");
+
     processCRMInBackground({
       business,
       customer,
