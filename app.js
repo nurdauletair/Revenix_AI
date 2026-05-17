@@ -2,6 +2,7 @@ require("dotenv").config();
 
 const express = require("express");
 const { handleWhatsAppWebhook } = require("./channels/whatsapp");
+const { startFollowUpWorker } = require("./services/followUps");
 
 const app = express();
 
@@ -29,6 +30,7 @@ app.get("/webhook", (req, res) => {
 app.post("/webhook", async (req, res) => {
   console.log("📩 WhatsApp webhook:", JSON.stringify(req.body, null, 2));
 
+  // Meta должен получить быстрый 200 OK
   res.sendStatus(200);
 
   try {
@@ -42,6 +44,10 @@ const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
+
+  // Запускаем follow-up worker после старта сервера
+  startFollowUpWorker();
 });
 
+// Telegram bot
 require("./channels/telegram");

@@ -345,4 +345,5 @@ ${msg.document?.filename || "file"}
 
 module.exports = {
   handleWhatsAppWebhook,
+  sendWhatsAppMessage,
 };
