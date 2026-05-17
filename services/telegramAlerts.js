@@ -67,6 +67,11 @@ function getAiButtons(userId) {
   };
 }
 
+// ======================
+// NEW BOOKING ALERT
+// Без кнопок AI, потому что это обычная заявка.
+// ======================
+
 async function notifyAdminsAboutBooking({
   business,
   customer,
@@ -100,9 +105,8 @@ async function notifyAdminsAboutBooking({
 📝 <b>Заметки:</b>
 ${escapeHtml(booking.notes || "нет")}
 
-Команды:
-✅ Вернуть AI: /ai_on ${escapeHtml(userId)}
-⛔ Оставить менеджеру: /ai_off ${escapeHtml(userId)}
+Открыть карточку клиента:
+<code>/clients ${escapeHtml(userId)}</code>
 `;
 
   for (const admin of admins) {
@@ -111,8 +115,7 @@ ${escapeHtml(booking.notes || "нет")}
     try {
       await sendTelegramMessage(
         admin.telegram_user_id,
-        message,
-        getAiButtons(userId)
+        message
       );
     } catch (err) {
       console.error(
@@ -122,6 +125,11 @@ ${escapeHtml(booking.notes || "нет")}
     }
   }
 }
+
+// ======================
+// BOOKING UPDATE ALERT
+// Без кнопок AI, потому что это обновление заявки.
+// ======================
 
 async function notifyAdminsAboutBookingUpdate({
   business,
@@ -191,9 +199,8 @@ ${changeText}
 🏠 <b>Комната:</b> ${escapeHtml(newBooking.room_type || "не указано")}
 📐 <b>Площадь:</b> ${escapeHtml(newBooking.estimated_area || "не указано")}
 
-Команды:
-✅ Вернуть AI: /ai_on ${escapeHtml(userId)}
-⛔ Оставить менеджеру: /ai_off ${escapeHtml(userId)}
+Открыть карточку клиента:
+<code>/clients ${escapeHtml(userId)}</code>
 `;
 
   for (const admin of admins) {
@@ -202,8 +209,7 @@ ${changeText}
     try {
       await sendTelegramMessage(
         admin.telegram_user_id,
-        message,
-        getAiButtons(userId)
+        message
       );
     } catch (err) {
       console.error(
@@ -213,6 +219,11 @@ ${changeText}
     }
   }
 }
+
+// ======================
+// HUMAN HANDOFF ALERT
+// Только тут кнопки AI нужны.
+// ======================
 
 async function notifyAdminsAboutHandoff({
   business,
