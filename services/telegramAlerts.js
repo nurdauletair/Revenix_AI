@@ -67,9 +67,22 @@ function getAiButtons(userId) {
   };
 }
 
+function getClientCardButton(channel, userId) {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: "👤 Открыть карточку клиента",
+          callback_data: `client:${channel}:${userId}`,
+        },
+      ],
+    ],
+  };
+}
+
 // ======================
 // NEW BOOKING ALERT
-// Без кнопок AI, потому что это обычная заявка.
+// Здесь только кнопка карточки клиента.
 // ======================
 
 async function notifyAdminsAboutBooking({
@@ -104,9 +117,6 @@ async function notifyAdminsAboutBooking({
 
 📝 <b>Заметки:</b>
 ${escapeHtml(booking.notes || "нет")}
-
-Открыть карточку клиента:
-<code>/clients ${escapeHtml(userId)}</code>
 `;
 
   for (const admin of admins) {
@@ -115,7 +125,8 @@ ${escapeHtml(booking.notes || "нет")}
     try {
       await sendTelegramMessage(
         admin.telegram_user_id,
-        message
+        message,
+        getClientCardButton(channel, userId)
       );
     } catch (err) {
       console.error(
@@ -128,7 +139,7 @@ ${escapeHtml(booking.notes || "нет")}
 
 // ======================
 // BOOKING UPDATE ALERT
-// Без кнопок AI, потому что это обновление заявки.
+// Здесь только кнопка карточки клиента.
 // ======================
 
 async function notifyAdminsAboutBookingUpdate({
@@ -198,9 +209,6 @@ ${changeText}
 🕒 <b>Время:</b> ${escapeHtml(newBooking.preferred_time || "не указано")}
 🏠 <b>Комната:</b> ${escapeHtml(newBooking.room_type || "не указано")}
 📐 <b>Площадь:</b> ${escapeHtml(newBooking.estimated_area || "не указано")}
-
-Открыть карточку клиента:
-<code>/clients ${escapeHtml(userId)}</code>
 `;
 
   for (const admin of admins) {
@@ -209,7 +217,8 @@ ${changeText}
     try {
       await sendTelegramMessage(
         admin.telegram_user_id,
-        message
+        message,
+        getClientCardButton(channel, userId)
       );
     } catch (err) {
       console.error(
@@ -222,7 +231,7 @@ ${changeText}
 
 // ======================
 // HUMAN HANDOFF ALERT
-// Только тут кнопки AI нужны.
+// Только тут нужны кнопки управления AI.
 // ======================
 
 async function notifyAdminsAboutHandoff({
