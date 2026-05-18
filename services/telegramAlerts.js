@@ -12,6 +12,11 @@ function escapeHtml(value = "") {
     .replace(/>/g, "&gt;");
 }
 
+function limitText(value = "", max = 3000) {
+  const text = String(value || "");
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
 async function sendTelegramMessage(chatId, text, replyMarkup = null) {
   const token = process.env.TELEGRAM_TOKEN;
 
@@ -48,7 +53,7 @@ async function sendTelegramPhoto(chatId, photoPath, caption, replyMarkup = null)
 
   form.append("chat_id", chatId);
   form.append("photo", fs.createReadStream(photoPath));
-  form.append("caption", caption);
+  form.append("caption", limitText(caption, 900));
   form.append("parse_mode", "HTML");
 
   if (replyMarkup) {
@@ -112,6 +117,8 @@ function getClientCardButton(channel, userId) {
 
 // ======================
 // PHOTO LEAD ALERT
+// Фото отправляем с короткой подписью.
+// AI-анализ отправляем отдельным сообщением.
 // ======================
 
 async function notifyAdminsAboutPhotoLead({
@@ -129,20 +136,22 @@ async function notifyAdminsAboutPhotoLead({
     return;
   }
 
-  const message = `
+  const shortCaption = `
 📸 <b>Клиент отправил фото</b>
 
 🏢 <b>Бизнес:</b> ${escapeHtml(business.name || "не указано")}
 📲 <b>Канал:</b> ${escapeHtml(channel || "не указано")}
 👤 <b>User ID:</b> ${escapeHtml(userId)}
 
-📝 <b>Подпись клиента:</b>
-${escapeHtml(caption || "нет")}
+📝 <b>Подпись:</b> ${escapeHtml(caption || "нет")}
+`;
 
-🤖 <b>AI-анализ фото:</b>
-${escapeHtml(imageAnalysis || "не удалось проанализировать")}
+  const analysisMessage = `
+🤖 <b>AI-анализ фото</b>
 
-Откройте карточку клиента, чтобы посмотреть диалог и статус.
+${escapeHtml(limitText(imageAnalysis || "не удалось проанализировать", 3000))}
+
+👤 <b>Клиент:</b> <code>${escapeHtml(userId)}</code>
 `;
 
   for (const admin of admins) {
@@ -152,7 +161,13 @@ ${escapeHtml(imageAnalysis || "не удалось проанализирова�
       await sendTelegramPhoto(
         admin.telegram_user_id,
         photoPath,
-        message,
+        shortCaption,
+        getClientCardButton(channel, userId)
+      );
+
+      await sendTelegramMessage(
+        admin.telegram_user_id,
+        analysisMessage,
         getClientCardButton(channel, userId)
       );
     } catch (err) {
