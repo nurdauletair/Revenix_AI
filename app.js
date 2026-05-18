@@ -28,7 +28,14 @@ app.get("/webhook", (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
-  console.log("📩 WhatsApp webhook:", JSON.stringify(req.body, null, 2));
+  const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+  const messages = value?.messages || [];
+  const statuses = value?.statuses || [];
+
+  console.log("📩 WhatsApp webhook received:", {
+    messages: messages.length,
+    statuses: statuses.length,
+  });
 
   // Meta должен получить быстрый 200 OK
   res.sendStatus(200);

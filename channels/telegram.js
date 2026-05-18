@@ -41,6 +41,35 @@ function escapeHtml(value = "") {
     .replace(/>/g, "&gt;");
 }
 
+function limitText(value = "", max = 700) {
+  const text = String(value || "");
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function splitTelegramText(text, max = 3800) {
+  const source = String(text || "");
+
+  if (source.length <= max) {
+    return [source];
+  }
+
+  const chunks = [];
+  let current = "";
+
+  for (const line of source.split("\n")) {
+    if ((current + "\n" + line).length > max) {
+      if (current.trim()) chunks.push(current.trim());
+      current = line;
+    } else {
+      current += current ? `\n${line}` : line;
+    }
+  }
+
+  if (current.trim()) chunks.push(current.trim());
+
+  return chunks;
+}
+
 function leadEmoji(quality) {
   if (quality === "hot") return "🔥";
   if (quality === "warm") return "🟡";
@@ -61,20 +90,16 @@ function formatDate(value) {
 }
 
 async function sendTelegramMessage(chatId, text, replyMarkup = null) {
-  const payload = {
-    chat_id: chatId,
-    text,
-    parse_mode: "HTML",
-  };
+  const chunks = splitTelegramText(text, 3800);
 
-  if (replyMarkup) {
-    payload.reply_markup = replyMarkup;
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+
+    await bot.sendMessage(chatId, chunks[i], {
+      parse_mode: "HTML",
+      reply_markup: isLast ? replyMarkup || undefined : undefined,
+    });
   }
-
-  return bot.sendMessage(chatId, text, {
-    parse_mode: "HTML",
-    reply_markup: replyMarkup || undefined,
-  });
 }
 
 // ======================
@@ -267,9 +292,8 @@ async function getRecentChats() {
 📱 <code>${escapeHtml(c.user_id)}</code>
 📲 ${escapeHtml(c.channel || "unknown")}
 📌 ${escapeHtml(status)}
-💬 ${escapeHtml(intent)}
-🕒 ${escapeHtml(time)}
-Команда: <code>/clients ${escapeHtml(c.user_id)}</code>`;
+💬 ${escapeHtml(limitText(intent, 120))}
+🕒 ${escapeHtml(time)}`;
   });
 
   const text = `
@@ -283,7 +307,7 @@ ${lines.join("\n\n")}
   const buttons = {
     inline_keyboard: customers.map((c) => [
       {
-        text: `${leadEmoji(c.lead_quality)} ${c.name || c.user_id}`,
+        text: `${leadEmoji(c.lead_quality)} ${limitText(c.name || c.user_id, 25)}`,
         callback_data: `client:${c.channel}:${c.user_id}`,
       },
     ]),
@@ -326,13 +350,13 @@ async function getClientCard({ userId, channel = null }) {
     .eq("user_id", String(userId))
     .eq("channel", customer.channel)
     .order("created_at", { ascending: false })
-    .limit(8);
+    .limit(4);
 
   const recentMessages = (messages || [])
     .reverse()
     .map((m) => {
       const role = m.role === "assistant" ? "🤖 AI" : "👤 Клиент";
-      return `<b>${role}:</b> ${escapeHtml(m.content || "")}`;
+      return `<b>${role}:</b> ${escapeHtml(limitText(m.content || "", 700))}`;
     })
     .join("\n\n");
 
@@ -348,8 +372,8 @@ async function getClientCard({ userId, channel = null }) {
 👤 <b>Имя:</b> ${escapeHtml(customer.name || booking?.customer_name || "не указано")}
 📞 <b>Телефон:</b> ${escapeHtml(customer.phone || booking?.customer_phone || customer.user_id || "не указано")}
 
-💬 <b>Интерес:</b> ${escapeHtml(customer.intent || customer.need || "не указано")}
-❓ <b>Возражение:</b> ${escapeHtml(customer.objection || "не указано")}
+💬 <b>Интерес:</b> ${escapeHtml(limitText(customer.intent || customer.need || "не указано", 300))}
+❓ <b>Возражение:</b> ${escapeHtml(limitText(customer.objection || "не указано", 200))}
 🏠 <b>Комната:</b> ${escapeHtml(customer.room_type || booking?.room_type || "не указано")}
 📐 <b>Площадь:</b> ${escapeHtml(customer.estimated_area || booking?.estimated_area || "не указано")}
 🕒 <b>Срочность:</b> ${escapeHtml(customer.urgency || booking?.urgency || "не указано")}
@@ -483,7 +507,7 @@ bot.on("callback_query", async (query) => {
       show_alert: true,
     });
   } catch (error) {
-    console.error("Callback query error:", error);
+    console.error("Callback query error:", error.message || error);
 
     return bot.answerCallbackQuery(query.id, {
       text: "Ошибка обработки кнопки",
@@ -546,7 +570,7 @@ bot.onText(/\/chats/, async (msg) => {
 
     return sendTelegramMessage(chatId, result.text, result.buttons);
   } catch (error) {
-    console.error("Chats error:", error);
+    console.error("Chats error:", error.message || error);
     return sendTelegramMessage(chatId, "Ошибка при получении последних клиентов");
   }
 });
@@ -581,7 +605,7 @@ bot.onText(/\/clients(?:\s+(.+))?/, async (msg, match) => {
 
     return sendTelegramMessage(chatId, result.text, result.buttons);
   } catch (error) {
-    console.error("Client card error:", error);
+    console.error("Client card error:", error.message || error);
     return sendTelegramMessage(chatId, "Ошибка при получении карточки клиента");
   }
 });
@@ -612,7 +636,7 @@ bot.onText(/\/ai_on (.+)/, async (msg, match) => {
 
     sendTelegramMessage(msg.chat.id, `✅ AI снова включен для клиента: <code>${escapeHtml(userId)}</code>`);
   } catch (error) {
-    console.error("AI on error:", error);
+    console.error("AI on error:", error.message || error);
     sendTelegramMessage(msg.chat.id, "Ошибка при включении AI");
   }
 });
@@ -644,7 +668,7 @@ bot.onText(/\/ai_off (.+)/, async (msg, match) => {
 
     sendTelegramMessage(msg.chat.id, `⛔ AI отключен для клиента: <code>${escapeHtml(userId)}</code>`);
   } catch (error) {
-    console.error("AI off error:", error);
+    console.error("AI off error:", error.message || error);
     sendTelegramMessage(msg.chat.id, "Ошибка при отключении AI");
   }
 });
@@ -684,7 +708,7 @@ bot.onText(/\/status (.+)/, async (msg, match) => {
 
     sendTelegramMessage(msg.chat.id, text);
   } catch (error) {
-    console.error("Status error:", error);
+    console.error("Status error:", error.message || error);
     sendTelegramMessage(msg.chat.id, "Ошибка при получении статуса");
   }
 });
@@ -815,7 +839,7 @@ bot.onText(/\/requests/, async (msg) => {
     .select("*")
     .eq("business_id", currentBusiness.id)
     .order("created_at", { ascending: false })
-    .limit(20);
+    .limit(10);
 
   if (error) {
     console.error("Requests error:", error);
@@ -836,14 +860,13 @@ bot.onText(/\/requests/, async (msg) => {
     text += `🕒 ${escapeHtml(b.preferred_time || "время не указано")}\n`;
     text += `🏠 ${escapeHtml(b.room_type || "комната не указана")}\n`;
     text += `📐 ${escapeHtml(b.estimated_area || "площадь не указана")}\n`;
-    text += `📌 ${escapeHtml(b.status || "new")}\n`;
-    text += `Команда: <code>/clients ${escapeHtml(b.user_id)}</code>\n\n`;
+    text += `📌 ${escapeHtml(b.status || "new")}\n\n`;
   });
 
   const buttons = {
     inline_keyboard: data.map((b) => [
       {
-        text: `${leadEmoji(b.lead_quality)} ${b.customer_name || b.user_id}`,
+        text: `${leadEmoji(b.lead_quality)} ${limitText(b.customer_name || b.user_id, 25)}`,
         callback_data: `client:${b.channel}:${b.user_id}`,
       },
     ]),
@@ -879,7 +902,7 @@ bot.on("message", async (msg) => {
 
     sendTelegramMessage(chatId, answer);
   } catch (error) {
-    console.error("Telegram message error:", error);
+    console.error("Telegram message error:", error.message || error);
 
     sendTelegramMessage(
       msg.chat.id,

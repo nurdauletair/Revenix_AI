@@ -9,7 +9,7 @@ function addMessageToBatch({
   channel,
   userId,
   text,
-  delayMs = 6000,
+  delayMs = 9000,
   onReady,
 }) {
   const key = getBatchKey({
