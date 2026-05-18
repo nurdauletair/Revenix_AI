@@ -1,6 +1,8 @@
 require("dotenv").config();
 
 const axios = require("axios");
+const fs = require("fs");
+const FormData = require("form-data");
 const supabase = require("../database/supabase");
 
 function escapeHtml(value = "") {
@@ -31,6 +33,34 @@ async function sendTelegramMessage(chatId, text, replyMarkup = null) {
   await axios.post(
     `https://api.telegram.org/bot${token}/sendMessage`,
     payload
+  );
+}
+
+async function sendTelegramPhoto(chatId, photoPath, caption, replyMarkup = null) {
+  const token = process.env.TELEGRAM_TOKEN;
+
+  if (!token) {
+    console.error("TELEGRAM_TOKEN is missing");
+    return;
+  }
+
+  const form = new FormData();
+
+  form.append("chat_id", chatId);
+  form.append("photo", fs.createReadStream(photoPath));
+  form.append("caption", caption);
+  form.append("parse_mode", "HTML");
+
+  if (replyMarkup) {
+    form.append("reply_markup", JSON.stringify(replyMarkup));
+  }
+
+  await axios.post(
+    `https://api.telegram.org/bot${token}/sendPhoto`,
+    form,
+    {
+      headers: form.getHeaders(),
+    }
   );
 }
 
@@ -81,8 +111,61 @@ function getClientCardButton(channel, userId) {
 }
 
 // ======================
+// PHOTO LEAD ALERT
+// ======================
+
+async function notifyAdminsAboutPhotoLead({
+  business,
+  channel,
+  userId,
+  photoPath,
+  caption,
+  imageAnalysis,
+}) {
+  const admins = await getBusinessAdmins(business.id);
+
+  if (!admins.length) {
+    console.error("No admins found for business:", business.id);
+    return;
+  }
+
+  const message = `
+📸 <b>Клиент отправил фото</b>
+
+🏢 <b>Бизнес:</b> ${escapeHtml(business.name || "не указано")}
+📲 <b>Канал:</b> ${escapeHtml(channel || "не указано")}
+👤 <b>User ID:</b> ${escapeHtml(userId)}
+
+📝 <b>Подпись клиента:</b>
+${escapeHtml(caption || "нет")}
+
+🤖 <b>AI-анализ фото:</b>
+${escapeHtml(imageAnalysis || "не удалось проанализировать")}
+
+Откройте карточку клиента, чтобы посмотреть диалог и статус.
+`;
+
+  for (const admin of admins) {
+    if (!admin.telegram_user_id) continue;
+
+    try {
+      await sendTelegramPhoto(
+        admin.telegram_user_id,
+        photoPath,
+        message,
+        getClientCardButton(channel, userId)
+      );
+    } catch (err) {
+      console.error(
+        "Telegram photo lead alert error:",
+        err.response?.data || err.message
+      );
+    }
+  }
+}
+
+// ======================
 // NEW BOOKING ALERT
-// Здесь только кнопка карточки клиента.
 // ======================
 
 async function notifyAdminsAboutBooking({
@@ -139,7 +222,6 @@ ${escapeHtml(booking.notes || "нет")}
 
 // ======================
 // BOOKING UPDATE ALERT
-// Здесь только кнопка карточки клиента.
 // ======================
 
 async function notifyAdminsAboutBookingUpdate({
@@ -231,7 +313,6 @@ ${changeText}
 
 // ======================
 // HUMAN HANDOFF ALERT
-// Только тут нужны кнопки управления AI.
 // ======================
 
 async function notifyAdminsAboutHandoff({
@@ -293,7 +374,9 @@ ${escapeHtml(reason || "нужен менеджер")}
 
 module.exports = {
   sendTelegramMessage,
+  sendTelegramPhoto,
   notifyAdminsAboutHandoff,
   notifyAdminsAboutBooking,
   notifyAdminsAboutBookingUpdate,
+  notifyAdminsAboutPhotoLead,
 };

@@ -10,6 +10,10 @@ const { transcribeAudio } = require("../ai/transcribe");
 const { analyzeImage } = require("../ai/vision");
 const { addMessageToBatch } = require("../services/messageBatcher");
 
+const {
+  notifyAdminsAboutPhotoLead,
+} = require("../services/telegramAlerts");
+
 // =========================
 // FIND BUSINESS
 // =========================
@@ -73,7 +77,6 @@ async function sendWhatsAppMessage({ business, to, text }) {
       }
     );
 
-    // Пауза, чтобы два сообщения пришли красиво по очереди
     await wait(700);
   }
 }
@@ -167,7 +170,6 @@ async function handleWhatsAppWebhook(body) {
       for (const msg of messages) {
         try {
           const userId = msg.from;
-
           const token = decrypt(business.whatsapp_token_encrypted);
 
           let text = null;
@@ -235,10 +237,23 @@ async function handleWhatsAppWebhook(body) {
 Подпись клиента:
 ${caption}
 
-Опиши изображение и помоги понять,
-что хочет клиент.
+Опиши изображение и помоги понять:
+1. что изображено
+2. какая комната или объект
+3. есть ли признаки ремонта, потолка, окон, стен
+4. что можно предложить клиенту
+5. какие уточняющие вопросы стоит задать
 `
             );
+
+            await notifyAdminsAboutPhotoLead({
+              business,
+              channel: "whatsapp",
+              userId,
+              photoPath: filePath,
+              caption,
+              imageAnalysis,
+            });
 
             fs.unlinkSync(filePath);
 
