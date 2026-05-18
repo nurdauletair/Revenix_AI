@@ -57,4 +57,9 @@ app.listen(PORT, "0.0.0.0", () => {
 });
 
 // Telegram bot
-require("./channels/telegram");
+if (process.env.RUN_TELEGRAM === "true") {
+  require("./channels/telegram");
+  console.log("✅ Telegram bot enabled");
+} else {
+  console.log("⏸️ Telegram bot disabled");
+}
