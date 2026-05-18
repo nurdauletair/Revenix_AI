@@ -34,38 +34,60 @@ const openai = new OpenAI({
 });
 
 // =========================
-// DIRECT HANDOFF KEYWORDS
+// DIRECT HANDOFF CHECK
 // =========================
 
+function extractRealClientText(text = "") {
+  const source = String(text || "");
+
+  if (source.includes("Реальная подпись клиента:")) {
+    const afterCaption = source.split("Реальная подпись клиента:")[1] || "";
+    const captionOnly = afterCaption.split("AI-анализ фото")[0] || afterCaption;
+
+    return captionOnly.trim();
+  }
+
+  if (source.includes("Реальное сообщение/подпись клиента:")) {
+    const afterCaption =
+      source.split("Реальное сообщение/подпись клиента:")[1] || "";
+    const captionOnly = afterCaption.split("AI-анализ фото")[0] || afterCaption;
+
+    return captionOnly.trim();
+  }
+
+  return source;
+}
+
 function isDirectHandoffRequest(text = "") {
-  const lower = String(text).toLowerCase();
+  const realText = extractRealClientText(text);
+  const lower = String(realText || "").toLowerCase();
+
+  if (!lower || lower === "без подписи") {
+    return false;
+  }
 
   const keywords = [
-    // RU
-    "менеджер",
-    "оператор",
-    "живой человек",
-    "можно с человеком",
+    // RU — только прямые просьбы
     "можно с менеджером",
     "можно с оператором",
-    "хочу поговорить с человеком",
+    "можно с человеком",
     "хочу поговорить с менеджером",
+    "хочу поговорить с оператором",
+    "хочу поговорить с человеком",
+    "нужен менеджер",
+    "дайте менеджера",
     "позвоните",
     "перезвоните",
     "свяжитесь со мной",
-    "нужен менеджер",
-    "дайте менеджера",
 
-    // KZ
-    "менеджермен",
-    "оператормен",
-    "адаммен сөйлесейін",
+    // KZ — только прямые просьбы
     "менеджермен сөйлесейін",
     "оператормен сөйлесейін",
-    "қоңырау шалыңыз",
-    "маған қоңырау шалыңыз",
-    "хабарласыңыз",
+    "адаммен сөйлесейін",
     "менеджер керек",
+    "маған қоңырау шалыңыз",
+    "қоңырау шалыңыз",
+    "хабарласыңыз",
   ];
 
   return keywords.some((word) => lower.includes(word));
@@ -283,7 +305,7 @@ async function handleMessage({ business, channel, userId, text }) {
         customer,
         channel,
         userId,
-        userText: text,
+        userText: extractRealClientText(text),
         aiAnswer: "Клиент уже ожидает менеджера.",
         reason:
           customer.human_reason ||
@@ -311,7 +333,7 @@ async function handleMessage({ business, channel, userId, text }) {
         customer,
         channel,
         userId,
-        userText: text,
+        userText: extractRealClientText(text),
         aiAnswer: "Клиент напрямую попросил менеджера.",
         reason: "Клиент попросил менеджера/звонок",
       });
