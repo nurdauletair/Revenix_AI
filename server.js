@@ -205,6 +205,7 @@ async function processCRMInBackground({
           status: "booking_created",
           lead_stage: "booking_created",
           lead_quality: "hot",
+          followup_blocked: true,
           updated_at: new Date().toISOString(),
         })
         .eq("id", customer.id);

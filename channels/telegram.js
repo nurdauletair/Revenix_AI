@@ -89,6 +89,18 @@ function formatDate(value) {
   }
 }
 
+function todayStartIso() {
+  const now = new Date();
+
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  ).toISOString();
+}
+
+function sevenDaysAgoIso() {
+  return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+}
+
 async function sendTelegramMessage(chatId, text, replyMarkup = null) {
   const chunks = splitTelegramText(text, 3800);
 
@@ -128,6 +140,14 @@ async function setTelegramCommands() {
       {
         command: "leads",
         description: "Статусы лидов",
+      },
+      {
+        command: "close",
+        description: "Закрыть сделку",
+      },
+      {
+        command: "lost",
+        description: "Отметить клиента потерянным",
       },
       {
         command: "myid",
@@ -255,6 +275,83 @@ async function updateCustomerHumanMode({
   }
 
   return data;
+}
+
+// ======================
+// DEAL STATUS HELPERS
+// ======================
+
+async function closeDealByUserId(userId) {
+  const now = new Date().toISOString();
+
+  const { data: customer, error: customerError } = await supabase
+    .from("customers")
+    .update({
+      status: "closed",
+      lead_stage: "closed",
+      lead_quality: "hot",
+      followup_blocked: true,
+      closed_at: now,
+      updated_at: now,
+    })
+    .eq("business_id", currentBusiness.id)
+    .eq("user_id", String(userId))
+    .select()
+    .maybeSingle();
+
+  if (customerError) {
+    console.error("Close customer error:", customerError);
+    throw customerError;
+  }
+
+  await supabase
+    .from("bookings")
+    .update({
+      status: "closed",
+      closed_at: now,
+      updated_at: now,
+    })
+    .eq("business_id", currentBusiness.id)
+    .eq("user_id", String(userId))
+    .in("status", ["new", "pending", "confirmed"]);
+
+  return customer;
+}
+
+async function markDealLostByUserId(userId) {
+  const now = new Date().toISOString();
+
+  const { data: customer, error: customerError } = await supabase
+    .from("customers")
+    .update({
+      status: "lost",
+      lead_stage: "lost",
+      followup_blocked: true,
+      lost_at: now,
+      updated_at: now,
+    })
+    .eq("business_id", currentBusiness.id)
+    .eq("user_id", String(userId))
+    .select()
+    .maybeSingle();
+
+  if (customerError) {
+    console.error("Lost customer error:", customerError);
+    throw customerError;
+  }
+
+  await supabase
+    .from("bookings")
+    .update({
+      status: "lost",
+      lost_at: now,
+      updated_at: now,
+    })
+    .eq("business_id", currentBusiness.id)
+    .eq("user_id", String(userId))
+    .in("status", ["new", "pending", "confirmed"]);
+
+  return customer;
 }
 
 // ======================
@@ -392,6 +489,18 @@ ${recentMessages || "Сообщений нет."}
     inline_keyboard: [
       [
         {
+          text: "✅ Закрыть сделку",
+          callback_data: `close:${customer.user_id}`,
+        },
+      ],
+      [
+        {
+          text: "❌ Потерян",
+          callback_data: `lost:${customer.user_id}`,
+        },
+      ],
+      [
+        {
           text: "✅ Вернуть AI",
           callback_data: `ai_on:${customer.user_id}`,
         },
@@ -453,6 +562,46 @@ bot.on("callback_query", async (query) => {
         text: "Некорректная кнопка",
         show_alert: true,
       });
+    }
+
+    if (action === "close") {
+      const customer = await closeDealByUserId(userId);
+
+      if (!customer) {
+        return bot.answerCallbackQuery(query.id, {
+          text: "Клиент не найден",
+          show_alert: true,
+        });
+      }
+
+      await bot.answerCallbackQuery(query.id, {
+        text: "Сделка закрыта",
+      });
+
+      return sendTelegramMessage(
+        chatId,
+        `✅ Сделка закрыта: <code>${escapeHtml(userId)}</code>\n\nСтатус: <b>closed</b>. Follow-up отключён.`
+      );
+    }
+
+    if (action === "lost") {
+      const customer = await markDealLostByUserId(userId);
+
+      if (!customer) {
+        return bot.answerCallbackQuery(query.id, {
+          text: "Клиент не найден",
+          show_alert: true,
+        });
+      }
+
+      await bot.answerCallbackQuery(query.id, {
+        text: "Клиент отмечен lost",
+      });
+
+      return sendTelegramMessage(
+        chatId,
+        `❌ Клиент отмечен как потерянный: <code>${escapeHtml(userId)}</code>\n\nСтатус: <b>lost</b>. Follow-up отключён.`
+      );
     }
 
     if (action === "ai_on") {
@@ -535,6 +684,9 @@ bot.onText(/\/start/, async (msg) => {
 /stats — статистика
 /leads — статусы лидов
 
+/close USER_ID — закрыть сделку
+/lost USER_ID — отметить потерянным
+
 /ai_off USER_ID — отключить AI для клиента
 /ai_on USER_ID — включить AI обратно
 /status USER_ID — проверить статус клиента
@@ -607,6 +759,78 @@ bot.onText(/\/clients(?:\s+(.+))?/, async (msg, match) => {
   } catch (error) {
     console.error("Client card error:", error.message || error);
     return sendTelegramMessage(chatId, "Ошибка при получении карточки клиента");
+  }
+});
+
+// ======================
+// /close USER_ID
+// ======================
+
+bot.onText(/\/close (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+
+  const isUserAdmin = await isAdmin(chatId);
+  if (!isUserAdmin) return;
+
+  if (!currentBusiness) {
+    return sendTelegramMessage(chatId, "Бизнес ещё не загружен");
+  }
+
+  const userId = match[1].trim();
+
+  try {
+    const customer = await closeDealByUserId(userId);
+
+    if (!customer) {
+      return sendTelegramMessage(
+        chatId,
+        `Клиент не найден: <code>${escapeHtml(userId)}</code>`
+      );
+    }
+
+    return sendTelegramMessage(
+      chatId,
+      `✅ Сделка закрыта: <code>${escapeHtml(userId)}</code>\n\nКлиент отмечен как <b>closed</b>. Follow-up отключён.`
+    );
+  } catch (error) {
+    console.error("Close deal error:", error.message || error);
+    return sendTelegramMessage(chatId, "Ошибка при закрытии сделки");
+  }
+});
+
+// ======================
+// /lost USER_ID
+// ======================
+
+bot.onText(/\/lost (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+
+  const isUserAdmin = await isAdmin(chatId);
+  if (!isUserAdmin) return;
+
+  if (!currentBusiness) {
+    return sendTelegramMessage(chatId, "Бизнес ещё не загружен");
+  }
+
+  const userId = match[1].trim();
+
+  try {
+    const customer = await markDealLostByUserId(userId);
+
+    if (!customer) {
+      return sendTelegramMessage(
+        chatId,
+        `Клиент не найден: <code>${escapeHtml(userId)}</code>`
+      );
+    }
+
+    return sendTelegramMessage(
+      chatId,
+      `❌ Клиент отмечен как потерянный: <code>${escapeHtml(userId)}</code>\n\nСтатус: <b>lost</b>. Follow-up отключён.`
+    );
+  } catch (error) {
+    console.error("Lost deal error:", error.message || error);
+    return sendTelegramMessage(chatId, "Ошибка при изменении статуса");
   }
 });
 
@@ -766,60 +990,88 @@ bot.onText(/\/leads/, async (msg) => {
 // ======================
 
 bot.onText(/\/stats/, async (msg) => {
-  const isUserAdmin = await isAdmin(msg.chat.id);
+  const chatId = msg.chat.id;
+
+  const isUserAdmin = await isAdmin(chatId);
   if (!isUserAdmin) return;
 
   if (!currentBusiness) {
-    return sendTelegramMessage(msg.chat.id, "Бизнес ещё не загружен");
+    return sendTelegramMessage(chatId, "Бизнес ещё не загружен");
   }
 
-  const { count: messagesCount } = await supabase
-    .from("messages")
-    .select("*", { count: "exact", head: true })
-    .eq("business_id", currentBusiness.id);
+  const todayStart = todayStartIso();
+  const sevenDaysAgo = sevenDaysAgoIso();
 
-  const { count: customersCount } = await supabase
+  const { count: customersToday } = await supabase
     .from("customers")
     .select("*", { count: "exact", head: true })
-    .eq("business_id", currentBusiness.id);
+    .eq("business_id", currentBusiness.id)
+    .gte("created_at", todayStart);
 
-  const { count: bookingsCount } = await supabase
+  const { count: bookingsToday } = await supabase
     .from("bookings")
     .select("*", { count: "exact", head: true })
-    .eq("business_id", currentBusiness.id);
+    .eq("business_id", currentBusiness.id)
+    .gte("created_at", todayStart);
 
-  const { count: telegramCount } = await supabase
+  const { count: customers7d } = await supabase
     .from("customers")
     .select("*", { count: "exact", head: true })
     .eq("business_id", currentBusiness.id)
-    .eq("channel", "telegram");
+    .gte("created_at", sevenDaysAgo);
 
-  const { count: instagramCount } = await supabase
+  const { count: bookings7d } = await supabase
+    .from("bookings")
+    .select("*", { count: "exact", head: true })
+    .eq("business_id", currentBusiness.id)
+    .gte("created_at", sevenDaysAgo);
+
+  const { count: closed7d } = await supabase
     .from("customers")
     .select("*", { count: "exact", head: true })
     .eq("business_id", currentBusiness.id)
-    .eq("channel", "instagram");
+    .eq("status", "closed")
+    .gte("closed_at", sevenDaysAgo);
 
-  const { count: whatsappCount } = await supabase
+  const { count: lost7d } = await supabase
     .from("customers")
     .select("*", { count: "exact", head: true })
     .eq("business_id", currentBusiness.id)
-    .eq("channel", "whatsapp");
+    .eq("status", "lost")
+    .gte("lost_at", sevenDaysAgo);
+
+  const conversion =
+    customers7d && customers7d > 0
+      ? Math.round(((bookings7d || 0) / customers7d) * 100)
+      : 0;
+
+  const closeRate =
+    bookings7d && bookings7d > 0
+      ? Math.round(((closed7d || 0) / bookings7d) * 100)
+      : 0;
 
   const text = `
 📈 <b>Статистика:</b> ${escapeHtml(currentBusiness.name)}
 
-💬 Сообщений: ${messagesCount || 0}
-👥 Клиентов: ${customersCount || 0}
-🔥 Заявок: ${bookingsCount || 0}
+<b>Сегодня:</b>
+👥 Новых клиентов: ${customersToday || 0}
+🔥 Заявок: ${bookingsToday || 0}
 
-<b>Каналы:</b>
-Telegram: ${telegramCount || 0}
-Instagram: ${instagramCount || 0}
-WhatsApp: ${whatsappCount || 0}
+<b>За 7 дней:</b>
+👥 Клиентов: ${customers7d || 0}
+🔥 Заявок: ${bookings7d || 0}
+✅ Закрыто: ${closed7d || 0}
+❌ Потеряно: ${lost7d || 0}
+
+📊 Конверсия клиент → заявка: ${conversion}%
+💰 Конверсия заявка → продажа: ${closeRate}%
+
+Команды:
+<code>/chats</code> — клиенты
+<code>/requests</code> — заявки
 `;
 
-  sendTelegramMessage(msg.chat.id, text);
+  return sendTelegramMessage(chatId, text);
 });
 
 // ======================
