@@ -35,14 +35,67 @@ function getAlmatyDateTime() {
   });
 }
 
+// ======================
+// GET SHEET ID
+// ======================
+
+async function getSheetIdByTitle({ sheets, spreadsheetId, title }) {
+  const response = await sheets.spreadsheets.get({
+    spreadsheetId,
+  });
+
+  const sheet = response.data.sheets.find(
+    (item) => item.properties.title === title
+  );
+
+  if (!sheet) {
+    throw new Error(`Sheet not found: ${title}`);
+  }
+
+  return sheet.properties.sheetId;
+}
+
+// ======================
+// INSERT ROW AT TOP
+// Новые заявки будут появляться сверху:
+// Row 1 = заголовки
+// Row 2 = новая заявка
+// ======================
+
 async function appendRowToSheet({ spreadsheetId, values }) {
   const sheets = getSheetsClient();
 
-  await sheets.spreadsheets.values.append({
+  const sheetId = await getSheetIdByTitle({
+    sheets,
     spreadsheetId,
-    range: `${SHEET_NAME}!A:P`,
+    title: SHEET_NAME,
+  });
+
+  // 1. Вставляем новую пустую строку сразу после заголовков
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          insertDimension: {
+            range: {
+              sheetId,
+              dimension: "ROWS",
+              startIndex: 1,
+              endIndex: 2,
+            },
+            inheritFromBefore: false,
+          },
+        },
+      ],
+    },
+  });
+
+  // 2. Записываем данные в новую строку A2:P2
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${SHEET_NAME}!A2:P2`,
     valueInputOption: "USER_ENTERED",
-    insertDataOption: "INSERT_ROWS",
     requestBody: {
       values,
     },
@@ -83,6 +136,7 @@ async function appendBookingToSheet({ spreadsheetId, booking }) {
 
 // ======================
 // APPEND BOOKING UPDATE
+// Обновления тоже будут появляться сверху
 // ======================
 
 function buildUpdateNote({ oldBooking, newBooking }) {
@@ -171,29 +225,10 @@ async function appendBookingUpdateToSheet({
 }
 
 // ======================
-// UPDATE STATUS + COLOR ROW
-// Ищем клиента по user_id в колонке J
-// Статус меняем в колонке H
-// Строку красим:
-// closed = зелёный
-// lost = красный
+// STATUS COLOR
+// closed = green
+// lost = red
 // ======================
-
-async function getSheetIdByTitle({ sheets, spreadsheetId, title }) {
-  const response = await sheets.spreadsheets.get({
-    spreadsheetId,
-  });
-
-  const sheet = response.data.sheets.find(
-    (item) => item.properties.title === title
-  );
-
-  if (!sheet) {
-    throw new Error(`Sheet not found: ${title}`);
-  }
-
-  return sheet.properties.sheetId;
-}
 
 function getStatusColor(status) {
   if (status === "closed") {
@@ -218,6 +253,18 @@ function getStatusColor(status) {
     blue: 1,
   };
 }
+
+// ======================
+// UPDATE STATUS + COLOR ROW
+// Ищем клиента по user_id в колонке J
+// Статус меняем в колонке H
+// Строку красим:
+// closed = зелёный
+// lost = красный
+//
+// Так как новые заявки теперь сверху,
+// берём первую найденную строку клиента.
+// ======================
 
 async function updateBookingStatusInSheet({
   spreadsheetId,
@@ -264,8 +311,8 @@ async function updateBookingStatusInSheet({
     return;
   }
 
-  // Берём последнюю строку этого клиента
-  const rowIndex = matchingIndexes[matchingIndexes.length - 1];
+  // Новые заявки сверху, поэтому первая найденная строка — самая свежая
+  const rowIndex = matchingIndexes[0];
   const sheetRowNumber = rowIndex + 1;
 
   // Обновляем статус в колонке H
