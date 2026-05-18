@@ -3,6 +3,7 @@ require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const { handleMessage } = require("../server");
 const supabase = require("../database/supabase");
+const { updateBookingStatusInSheet } = require("../services/googleSheets");
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 
@@ -313,7 +314,19 @@ async function closeDealByUserId(userId) {
     })
     .eq("business_id", currentBusiness.id)
     .eq("user_id", String(userId))
-    .in("status", ["new", "pending", "confirmed"]);
+    .in("status", ["new", "pending", "confirmed", "updated"]);
+
+  if (currentBusiness.google_sheet_id) {
+    try {
+      await updateBookingStatusInSheet({
+        spreadsheetId: currentBusiness.google_sheet_id,
+        userId,
+        status: "closed",
+      });
+    } catch (err) {
+      console.error("Google Sheet close update error:", err.message);
+    }
+  }
 
   return customer;
 }
@@ -349,7 +362,19 @@ async function markDealLostByUserId(userId) {
     })
     .eq("business_id", currentBusiness.id)
     .eq("user_id", String(userId))
-    .in("status", ["new", "pending", "confirmed"]);
+    .in("status", ["new", "pending", "confirmed", "updated"]);
+
+  if (currentBusiness.google_sheet_id) {
+    try {
+      await updateBookingStatusInSheet({
+        spreadsheetId: currentBusiness.google_sheet_id,
+        userId,
+        status: "lost",
+      });
+    } catch (err) {
+      console.error("Google Sheet lost update error:", err.message);
+    }
+  }
 
   return customer;
 }
