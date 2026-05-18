@@ -159,6 +159,7 @@ async function handleWhatsAppWebhook(body) {
       const phoneNumberId = value.metadata?.phone_number_id;
       const messages = value.messages || [];
 
+      // statuses/webhook delivery updates нам не нужны
       if (!phoneNumberId || !messages.length) continue;
 
       const business = await findBusinessByPhoneNumberId(phoneNumberId);
@@ -344,6 +345,8 @@ ${msg.document?.filename || "file"}
 
           // =========================
           // SMART BATCHING
+          // ВАЖНО:
+          // delayMs здесь 9000, чтобы бот собирал сообщения 9 секунд.
           // =========================
 
           if (shouldBatch) {
@@ -352,7 +355,7 @@ ${msg.document?.filename || "file"}
               channel: "whatsapp",
               userId,
               text,
-              delayMs: 4000,
+              delayMs: 9000,
               onReady: processBatchedWhatsAppMessage,
             });
 

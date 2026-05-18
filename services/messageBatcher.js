@@ -28,6 +28,12 @@ function addMessageToBatch({
 
   messages.push(text);
 
+  console.log("📦 Message added to batch:", {
+    key,
+    count: messages.length,
+    delayMs,
+  });
+
   const timer = setTimeout(async () => {
     const batch = pendingMessages.get(key);
 
@@ -42,6 +48,11 @@ function addMessageToBatch({
       .join("\n");
 
     if (!combinedText) return;
+
+    console.log("🚀 Processing batched message:", {
+      key,
+      count: batch.messages.length,
+    });
 
     try {
       await onReady({
