@@ -9,6 +9,7 @@ const { decrypt } = require("../utils/encryption");
 const { transcribeAudio } = require("../ai/transcribe");
 const { analyzeImage } = require("../ai/vision");
 const { addMessageToBatch } = require("../services/messageBatcher");
+const { markMessageAsProcessing } = require("../services/deduplication");
 
 const {
   notifyAdminsAboutPhotoLead,
@@ -170,6 +171,23 @@ async function handleWhatsAppWebhook(body) {
       for (const msg of messages) {
         try {
           const userId = msg.from;
+          const providerMessageId = msg.id;
+
+          // =========================
+          // ANTI-DUPLICATE PROTECTION
+          // =========================
+
+          const isNewMessage = await markMessageAsProcessing({
+            businessId: business.id,
+            channel: "whatsapp",
+            providerMessageId,
+            userId,
+          });
+
+          if (!isNewMessage) {
+            continue;
+          }
+
           const token = decrypt(business.whatsapp_token_encrypted);
 
           let text = null;
